@@ -1,0 +1,5 @@
+python-celery (2.6.0) unstable; urgency=low
+
+  * Initial packaging
+
+ -- Joe Stump <joe@joestump.net>  Sat, 07 Apr 2012 14:10:21 +0000

@@ -1,0 +1,12 @@
+Source: python-celery
+Section: python
+Priority: extra
+Maintainer: Joe Stump <joe@joestump.net>
+Build-Depends: cdbs, debhelper (>= 6), python (>= 2.5), python-support, python-setuptools
+Standards-Version: 3.8.3
+Homepage: https://github.com/ask/celery
+
+Package: python-celery
+Architecture: all
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.5), python-anyjson (>= 0.3.1), python-dateutil (>=1.5), python-kombu (>=2.1.3)
+Description: Distributed Task Queue
