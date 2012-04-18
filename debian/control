@@ -8,5 +8,5 @@ Homepage: https://github.com/ask/celery
 
 Package: python-celery
 Architecture: all
-Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.5), python-anyjson (>= 0.3.1), python-dateutil (>=1.5), python-kombu (>=2.1.3)
+Depends: ${shlibs:Depends}, ${misc:Depends}, python (>= 2.5), python-anyjson (>= 0.3.1), python-dateutil (>=1.5), python-kombu (>=2.1.3), python-importlib, python-ordereddict
 Description: Distributed Task Queue
