@@ -12,21 +12,26 @@
 
 from __future__ import absolute_import
 
+import logging
 import sys
 import threading
 
-from ... import current_app
-from ... import states
-from ...datastructures import ExceptionInfo
-from ...exceptions import MaxRetriesExceededError, RetryTaskError
-from ...result import EagerResult
-from ...utils import fun_takes_kwargs, uuid, maybe_reraise
-from ...utils.functional import mattrgetter, maybe_list
-from ...utils.imports import instantiate
-from ...utils.mail import ErrorMail
+from kombu.utils import cached_property
 
-from ..state import current_task
-from ..registry import _unpickle_task
+from celery import current_app
+from celery import states
+from celery.datastructures import ExceptionInfo
+from celery.exceptions import MaxRetriesExceededError, RetryTaskError
+from celery.result import EagerResult
+from celery.utils import fun_takes_kwargs, uuid, maybe_reraise
+from celery.utils.functional import mattrgetter, maybe_list
+from celery.utils.imports import instantiate
+from celery.utils.log import get_logger
+from celery.utils.mail import ErrorMail
+
+from .annotations import resolve_all as resolve_all_annotations
+from .state import get_current_task
+from .registry import _unpickle_task
 
 #: extracts options related to publishing a message from a dict.
 extract_exec_options = mattrgetter("queue", "routing_key",
@@ -313,7 +318,7 @@ class BaseTask(object):
             self.backend = app.backend
 
         # decorate with annotations from config.
-        app.annotate_task(self)
+        self.annotate()
 
         # PeriodicTask uses this to add itself to the PeriodicTask schedule.
         self.on_bound(app)
@@ -333,13 +338,13 @@ class BaseTask(object):
         return self._app
     app = property(_get_app, bind)
 
+    def __call__(self, *args, **kwargs):
+        return self.run(*args, **kwargs)
+
     # - tasks are pickled into the name of the task only, and the reciever
     # - simply grabs it from the local registry.
     def __reduce__(self):
         return (_unpickle_task, (self.name, ), None)
-
-    def __call__(self, *args, **kwargs):
-        return self.run(*args, **kwargs)
 
     def run(self, *args, **kwargs):
         """The body of the task executed by workers."""
@@ -348,13 +353,12 @@ class BaseTask(object):
     def start_strategy(self, app, consumer):
         return instantiate(self.Strategy, self, app, consumer)
 
-    def get_logger(self, loglevel=None, logfile=None, propagate=False,
-            **kwargs):
+    def get_logger(self, **kwargs):
         """Get task-aware logger object."""
-        return self._get_app().log.setup_task_logger(
-            loglevel=self.request.loglevel if loglevel is None else loglevel,
-            logfile=self.request.logfile if logfile is None else logfile,
-            propagate=propagate, task_name=self.name, task_id=self.request.id)
+        logger = get_logger(self.name)
+        if logger.parent is logging.root:
+            logger.parent = get_logger("celery.task")
+        return logger
 
     def establish_connection(self, connect_timeout=None):
         """Establish a connection to the message broker."""
@@ -544,7 +548,7 @@ class BaseTask(object):
                 publish.release()
 
         result = self.AsyncResult(task_id)
-        parent = current_task()
+        parent = get_current_task()
         if parent:
             parent.request.children.append(result)
         return result
@@ -649,7 +653,7 @@ class BaseTask(object):
 
         """
         # trace imports BaseTask, so need to import inline.
-        from ...execute.trace import eager_trace_task
+        from celery.task.trace import eager_trace_task
 
         app = self._get_app()
         args = args or []
@@ -699,6 +703,17 @@ class BaseTask(object):
         """
         return self._get_app().AsyncResult(task_id, backend=self.backend,
                                                     task_name=self.name)
+
+    def subtask(self, *args, **kwargs):
+        """Returns :class:`~celery.subtask` object for
+        this task, wrapping arguments and execution options
+        for a single task invocation."""
+        from celery.canvas import subtask
+        return subtask(self, *args, **kwargs)
+
+    def s(self, *args, **kwargs):
+        """``.s(*a, **k) -> .subtask(a, k)``"""
+        return self.subtask(args, kwargs)
 
     def update_state(self, task_id=None, state=None, meta=None):
         """Update task state.
@@ -800,16 +815,17 @@ class BaseTask(object):
         """
         request.execute_using_pool(pool, loglevel, logfile)
 
+    def annotate(self):
+        for d in resolve_all_annotations(self.app.annotations, self):
+            self.__dict__.update(d)
+
     def __repr__(self):
         """`repr(task)`"""
         return "<@task: %s>" % (self.name, )
 
-    def subtask(self, *args, **kwargs):
-        """Returns :class:`~celery.task.sets.subtask` object for
-        this task, wrapping arguments and execution options
-        for a single task invocation."""
-        from ...task.sets import subtask
-        return subtask(self, *args, **kwargs)
+    @cached_property
+    def logger(self):
+        return self.get_logger()
 
     @property
     def __name__(self):

@@ -2,7 +2,7 @@
 from __future__ import absolute_import
 from __future__ import with_statement
 
-if __name__ == "__main__" and __package__ is None:
+if __name__ == "__main__" and globals().get("__package__") is None:
     __package__ = "celery.bin.celeryd_detach"
 
 import os
@@ -10,10 +10,13 @@ import sys
 
 from optparse import OptionParser, BadOptionError
 
-from .. import __version__
-from ..platforms import detached
+from celery import __version__
+from celery.platforms import detached
+from celery.utils.log import get_logger
 
 from .base import daemon_options, Option
+
+logger = get_logger(__name__)
 
 OPTION_LIST = daemon_options(default_pidfile="celeryd.pid") + (
                 Option("--fake",
@@ -27,8 +30,8 @@ def detach(path, argv, logfile=None, pidfile=None, uid=None,
         try:
             os.execv(path, [path] + argv)
         except Exception:
-            from .. import current_app
-            logger = current_app.log.setup_logger("ERROR", logfile)
+            from celery import current_app
+            current_app.log.setup_logging_subsystem("ERROR", logfile)
             logger.critical("Can't exec %r", " ".join([path] + argv),
                             exc_info=True)
 

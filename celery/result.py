@@ -21,25 +21,28 @@ from itertools import imap
 from . import current_app
 from . import states
 from .app import app_or_default
-from .app.registry import _unpickle_task
 from .datastructures import DependencyGraph
 from .exceptions import IncompleteStream, TimeoutError
 from .utils import cached_property
 from .utils.compat import OrderedDict
 
 
-def _unpickle_result(task_id, task_name):
-    return _unpickle_task(task_name).AsyncResult(task_id)
-
-
 def from_serializable(r):
-    id, nodes = r
-    if nodes:
-        return TaskSetResult(id, map(AsyncResult(nodes)))
-    return AsyncResult(id)
+    # earlier backends may just pickle, so check if
+    # result is already prepared.
+    if not isinstance(r, ResultBase):
+        id, nodes = r
+        if nodes:
+            return TaskSetResult(id, [AsyncResult(id) for id, _ in nodes])
+        return AsyncResult(id)
+    return r
 
 
-class AsyncResult(object):
+class ResultBase(object):
+    """Base class for all results"""
+
+
+class AsyncResult(ResultBase):
     """Query task state.
 
     :param id: see :attr:`id`.
@@ -124,7 +127,7 @@ class AsyncResult(object):
 
             @task
             def A(how_many):
-                return TaskSet(B.subtask((i, )) for i in xrange(how_many))
+                return TaskSet(B.s(i) for i in xrange(how_many))
 
             @task
             def B(i):
@@ -181,6 +184,14 @@ class AsyncResult(object):
         """Returns :const:`True` if the task failed."""
         return self.state == states.FAILURE
 
+    def build_graph(self, intermediate=False):
+        graph = DependencyGraph()
+        for parent, node in self.iterdeps(intermediate=intermediate):
+            if parent:
+                graph.add_arc(parent)
+                graph.add_edge(parent, node)
+        return graph
+
     def __str__(self):
         """`str(self) -> self.id`"""
         return self.id
@@ -190,30 +201,24 @@ class AsyncResult(object):
         return hash(self.id)
 
     def __repr__(self):
-        return "<AsyncResult: %s>" % self.id
+        return "<%s: %s>" % (self.__class__.__name__, self.id)
 
     def __eq__(self, other):
-        if isinstance(other, self.__class__):
-            return self.id == other.id
-        return other == self.id
+        if isinstance(other, AsyncResult):
+            return other.id == self.id
+        elif isinstance(other, basestring):
+            return other == self.id
+        return NotImplemented
 
     def __copy__(self):
-        return self.__class__(self.id, backend=self.backend)
+        r = self.__reduce__()
+        return r[0](*r[1])
 
     def __reduce__(self):
-        if self.task_name:
-            return (_unpickle_result, (self.id, self.task_name))
-        else:
-            return (AsyncResult, (self.id, self.backend,
-                                  None, self.app))
+        return self.__class__, self.__reduce_args__()
 
-    def build_graph(self, intermediate=False):
-        graph = DependencyGraph()
-        for parent, node in self.iterdeps(intermediate=intermediate):
-            if parent:
-                graph.add_arc(parent)
-                graph.add_edge(parent, node)
-        return graph
+    def __reduce_args__(self):
+        return self.id, self.backend, self.task_name, self.parent
 
     def set_parent(self, parent):
         self.parent = parent
@@ -288,7 +293,7 @@ class AsyncResult(object):
 BaseAsyncResult = AsyncResult  # for backwards compatibility.
 
 
-class ResultSet(object):
+class ResultSet(ResultBase):
     """Working with more than one result.
 
     :param results: List of result instances.
@@ -488,9 +493,9 @@ class ResultSet(object):
                 remaining = timeout - (time.time() - time_start)
                 if remaining <= 0.0:
                     raise TimeoutError("join operation timed out")
-            results.append(result.wait(timeout=remaining,
-                                       propagate=propagate,
-                                       interval=interval))
+            results.append(result.get(timeout=remaining,
+                                      propagate=propagate,
+                                      interval=interval))
         return results
 
     def iter_native(self, timeout=None, interval=None):
@@ -531,6 +536,15 @@ class ResultSet(object):
     def __len__(self):
         return len(self.results)
 
+    def __eq__(self, other):
+        if isinstance(other, ResultSet):
+            return other.results == self.results
+        return NotImplemented
+
+    def __repr__(self):
+        return "<%s: %r>" % (self.__class__.__name__,
+                             [r.id for r in self.results])
+
     @property
     def total(self):
         """Deprecated: Use ``len(r)``."""
@@ -570,7 +584,7 @@ class TaskSetResult(ResultSet):
         # XXX previously the "results" arg was named "subtasks".
         if "subtasks" in kwargs:
             results = kwargs["subtasks"]
-        super(TaskSetResult, self).__init__(results, **kwargs)
+        ResultSet.__init__(self, results, **kwargs)
 
     def save(self, backend=None):
         """Save taskset result for later retrieval using :meth:`restore`.
@@ -592,7 +606,19 @@ class TaskSetResult(ResultSet):
         return iter(self.results)
 
     def __reduce__(self):
-        return (TaskSetResult, (self.id, self.results))
+        return self.__class__, self.__reduce_args__()
+
+    def __reduce_args__(self):
+        return self.id, self.results
+
+    def __eq__(self, other):
+        if isinstance(other, TaskSetResult):
+            return other.id == self.id and other.results == self.results
+        return NotImplemented
+
+    def __repr__(self):
+        return "<%s: %s %r>" % (self.__class__.__name__, self.id,
+                                [r.id for r in self.results])
 
     def serializable(self):
         return self.id, [r.serializable() for r in self.results]
@@ -620,8 +646,10 @@ class EagerResult(AsyncResult):
         self._traceback = traceback
 
     def __reduce__(self):
-        return (EagerResult, (self.id, self._result,
-                              self._state, self._traceback))
+        return self.__class__, self.__reduce_args__()
+
+    def __reduce_args__(self):
+        return (self.id, self._result, self._state, self._traceback)
 
     def __copy__(self):
         cls, args = self.__reduce__()

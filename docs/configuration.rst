@@ -1066,6 +1066,18 @@ This option will be enabled by default in a later version.
 
 This is not a problem on Windows, as it does not have `fork()`.
 
+.. setting:: CELERYD_WORKER_LOST_WAIT
+
+CELERYD_WORKER_LOST_WAIT
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+In some cases a worker may be killed without proper cleanup,
+and the worker may have published a result before terminating.
+This value specifies how long we wait for any missing results before
+raising a :exc:`@WorkerLostError` exception.
+
+Default is 10.0
+
 .. setting:: CELERYD_MAX_TASKS_PER_CHILD
 
 CELERYD_MAX_TASKS_PER_CHILD
@@ -1089,7 +1101,7 @@ CELERYD_TASK_SOFT_TIME_LIMIT
 
 Task soft time limit in seconds.
 
-The :exc:`~celery.exceptions.SoftTimeLimitExceeded` exception will be
+The :exc:`~@SoftTimeLimitExceeded` exception will be
 raised when this is exceeded.  The task can catch this to
 e.g. clean up before the hard time limit comes.
 
@@ -1097,10 +1109,9 @@ Example:
 
 .. code-block:: python
 
-    from celery.task import task
     from celery.exceptions import SoftTimeLimitExceeded
 
-    @task()
+    @celery.task
     def mytask():
         try:
             return do_work()

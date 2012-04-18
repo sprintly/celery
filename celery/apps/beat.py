@@ -5,13 +5,12 @@ import atexit
 import socket
 import sys
 
-from .. import __version__, platforms
-from .. import beat
-from ..app import app_or_default
-from ..app.abstract import configurated, from_config
-from ..utils.imports import qualname
-from ..utils.log import LOG_LEVELS
-from ..utils.timeutils import humanize_seconds
+from celery import __version__, platforms, beat
+from celery.app import app_or_default
+from celery.app.abstract import configurated, from_config
+from celery.utils.imports import qualname
+from celery.utils.log import LOG_LEVELS, get_logger
+from celery.utils.timeutils import humanize_seconds
 
 STARTUP_INFO_FMT = """
 Configuration ->
@@ -22,6 +21,8 @@ Configuration ->
     . logfile -> %(logfile)s@%(loglevel)s
     . maxinterval -> %(hmax_interval)s (%(max_interval)ss)
 """.strip()
+
+logger = get_logger("celery.beat")
 
 
 class Beat(configurated):
@@ -50,29 +51,26 @@ class Beat(configurated):
             self.loglevel = LOG_LEVELS[self.loglevel.upper()]
 
     def run(self):
-        logger = self.setup_logging()
+        self.setup_logging()
         print(str(self.colored.cyan(
                     "celerybeat v%s is starting." % __version__)))
         self.init_loader()
         self.set_process_title()
-        self.start_scheduler(logger)
+        self.start_scheduler()
 
     def setup_logging(self):
         handled = self.app.log.setup_logging_subsystem(loglevel=self.loglevel,
                                                        logfile=self.logfile)
-        logger = self.app.log.get_default_logger(name="celery.beat")
         if self.redirect_stdouts and not handled:
             self.app.log.redirect_stdouts_to_logger(logger,
                     loglevel=self.redirect_stdouts_level)
-        return logger
 
-    def start_scheduler(self, logger=None):
+    def start_scheduler(self):
         c = self.colored
         if self.pidfile:
             pidlock = platforms.create_pidlock(self.pidfile).acquire()
             atexit.register(pidlock.release)
         beat = self.Service(app=self.app,
-                            logger=logger,
                             max_interval=self.max_interval,
                             scheduler_cls=self.scheduler_cls,
                             schedule_filename=self.schedule)
@@ -97,6 +95,7 @@ class Beat(configurated):
         # Run the worker init handler.
         # (Usually imports task modules and such.)
         self.app.loader.init_worker()
+        self.app.finalize()
 
     def startup_info(self, beat):
         scheduler = beat.get_scheduler(lazy=True)

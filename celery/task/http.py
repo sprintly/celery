@@ -11,6 +11,7 @@
 """
 from __future__ import absolute_import
 
+import anyjson
 import sys
 import urllib2
 
@@ -21,9 +22,7 @@ try:
 except ImportError:  # pragma: no cover
     from cgi import parse_qsl  # noqa
 
-from anyjson import deserialize
-
-from .. import __version__ as celery_version
+from celery import __version__ as celery_version
 from .base import Task as BaseTask
 
 GET_METHODS = frozenset(["GET", "HEAD"])
@@ -63,12 +62,12 @@ else:
                         for key, value in tup)
 
 
-def extract_response(raw_response):
+def extract_response(raw_response, loads=anyjson.loads):
     """Extract the response text from a raw JSON response."""
     if not raw_response:
         raise InvalidResponseError("Empty response")
     try:
-        payload = deserialize(raw_response)
+        payload = loads(raw_response)
     except ValueError, exc:
         raise InvalidResponseError, InvalidResponseError(
                 str(exc)), sys.exc_info()[2]
@@ -132,7 +131,7 @@ class HttpDispatch(object):
     user_agent = "celery/%s" % celery_version
     timeout = 5
 
-    def __init__(self, url, method, task_kwargs, logger):
+    def __init__(self, url, method, task_kwargs, logger=None):
         self.url = url
         self.method = method
         self.task_kwargs = task_kwargs
@@ -187,12 +186,12 @@ class HttpDispatchTask(BaseTask):
 
     url = None
     method = None
+    accept_magic_kwargs = False
 
     def run(self, url=None, method="GET", **kwargs):
         url = url or self.url
         method = method or self.method
-        logger = self.get_logger(**kwargs)
-        return HttpDispatch(url, method, kwargs, logger).dispatch()
+        return HttpDispatch(url, method, kwargs, self.logger).dispatch()
 
 
 class URL(MutableURL):

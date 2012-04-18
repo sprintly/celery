@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-    celery.execute.trace
+    celery.task.trace
     ~~~~~~~~~~~~~~~~~~~~
 
     This module defines how the task execution is traced:
@@ -25,13 +25,18 @@ import traceback
 
 from warnings import warn
 
-from .. import current_app
-from .. import states, signals
-from ..app.state import _tls
-from ..app.task import BaseTask
-from ..datastructures import ExceptionInfo
-from ..exceptions import RetryTaskError
-from ..utils.serialization import get_pickleable_exception
+from kombu.utils import kwdict
+
+from celery import current_app
+from celery import states, signals
+from celery.app.state import _tls
+from celery.app.task import BaseTask
+from celery.datastructures import ExceptionInfo
+from celery.exceptions import RetryTaskError
+from celery.utils.serialization import get_pickleable_exception
+from celery.utils.log import get_logger
+
+_logger = get_logger(__name__)
 
 send_prerun = signals.task_prerun.send
 prerun_receivers = signals.task_prerun.receivers
@@ -133,7 +138,6 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
     # saving the extra method call and a line less in the stack trace.
     fun = task if defines_custom_call(task) else task.run
 
-    task = task or current_app.tasks[name]
     loader = loader or current_app.loader
     backend = task.backend
     ignore_result = task.ignore_result
@@ -158,11 +162,12 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
     clear_request = task_request.clear
     on_chord_part_return = backend.on_chord_part_return
 
-    from celery.task import sets
-    subtask = sets.subtask
+    from celery import canvas
+    subtask = canvas.subtask
 
     def trace_task(uuid, args, kwargs, request=None):
         R = I = None
+        kwargs = kwdict(kwargs)
         try:
             _tls.current_task = task
             update_request(request or {}, args=args,
@@ -229,9 +234,8 @@ def build_tracer(name, task, loader=None, hostname=None, store_errors=True,
                     except (KeyboardInterrupt, SystemExit, MemoryError):
                         raise
                     except Exception, exc:
-                        logger = current_app.log.get_default_logger()
-                        logger.error("Process cleanup failed: %r", exc,
-                                     exc_info=True)
+                        _logger.error("Process cleanup failed: %r", exc,
+                                      exc_info=True)
         except Exception, exc:
             if eager:
                 raise

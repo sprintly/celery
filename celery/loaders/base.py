@@ -11,22 +11,22 @@
 """
 from __future__ import absolute_import
 
+import anyjson
 import importlib
 import os
 import re
 import traceback
 import warnings
 
-from anyjson import deserialize
 from datetime import datetime
 
 from kombu.utils.encoding import safe_str
 
-from ..datastructures import DictAttribute
-from ..exceptions import ImproperlyConfigured
-from ..utils import cached_property
-from ..utils.imports import import_from_cwd, symbol_by_name
-from ..utils.functional import maybe_list
+from celery.datastructures import DictAttribute
+from celery.exceptions import ImproperlyConfigured
+from celery.utils import cached_property
+from celery.utils.imports import import_from_cwd, symbol_by_name
+from celery.utils.functional import maybe_list
 
 BUILTIN_MODULES = frozenset()
 
@@ -62,12 +62,14 @@ class BaseLoader(object):
     _conf = None
 
     def __init__(self, app=None, **kwargs):
-        from ..app import app_or_default
+        from celery.app import app_or_default
         self.app = app_or_default(app)
         self.task_modules = set()
 
-    def now(self):
-        return datetime.utcnow()
+    def now(self, utc=True):
+        if utc:
+            return datetime.utcnow()
+        return datetime.now()
 
     def on_task_init(self, task_id, task):
         """This method is called before a task is executed."""
@@ -106,6 +108,7 @@ class BaseLoader(object):
     def init_worker(self):
         if not self.worker_initialized:
             self.worker_initialized = True
+            self.import_default_modules()
             self.on_worker_init()
 
     def init_worker_process(self):
@@ -137,11 +140,11 @@ class BaseLoader(object):
 
     def cmdline_config_parser(self, args, namespace="celery",
                 re_type=re.compile(r"\((\w+)\)"),
-                extra_types={"json": deserialize},
+                extra_types={"json": anyjson.loads},
                 override_types={"tuple": "json",
                                 "list": "json",
                                 "dict": "json"}):
-        from ..app.defaults import Option, NAMESPACES
+        from celery.app.defaults import Option, NAMESPACES
         namespace = namespace.upper()
         typemap = dict(Option.typemap, **extra_types)
 
@@ -201,6 +204,9 @@ class BaseLoader(object):
                 "Mail could not be sent: %r %r\n%r" % (
                     exc, {"To": to, "Subject": subject},
                     traceback.format_stack())))
+
+    def read_configuration(self):
+        return {}
 
     @property
     def conf(self):

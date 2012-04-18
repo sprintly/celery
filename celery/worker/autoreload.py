@@ -17,7 +17,9 @@ import time
 
 from collections import defaultdict
 
-from ..utils.threads import bgThread, Event
+from celery.utils.imports import module_file
+from celery.utils.log import get_logger
+from celery.utils.threads import bgThread, Event
 
 from .abstract import StartStopComponent
 
@@ -27,6 +29,8 @@ try:
 except ImportError:
     pyinotify = None        # noqa
     _ProcessEvent = object  # noqa
+
+logger = get_logger(__name__)
 
 
 class WorkerComponent(StartStopComponent):
@@ -39,8 +43,7 @@ class WorkerComponent(StartStopComponent):
 
     def create(self, w):
         w.autoreloader = self.instantiate(w.autoreloader_cls,
-                                          controller=w,
-                                          logger=w.logger)
+                                          controller=w)
         return w.autoreloader
 
 
@@ -157,8 +160,9 @@ class InotifyMonitor(_ProcessEvent):
             self._wm = pyinotify.WatchManager()
             self._notifier = pyinotify.Notifier(self._wm, self)
             add_watch = self._wm.add_watch
+            flags = pyinotify.IN_MODIFY | pyinotify.IN_ATTRIB
             for m in self._modules:
-                add_watch(m, pyinotify.IN_MODIFY | pyinotify.IN_ATTRIB)
+                add_watch(m, flags)
             self._notifier.loop()
         finally:
             if self._wm:
@@ -199,20 +203,18 @@ class Autoreloader(bgThread):
     """Tracks changes in modules and fires reload commands"""
     Monitor = Monitor
 
-    def __init__(self, controller, modules=None, monitor_cls=None,
-            logger=None, **options):
+    def __init__(self, controller, modules=None, monitor_cls=None, **options):
         super(Autoreloader, self).__init__()
         self.controller = controller
         app = self.controller.app
         self.modules = app.loader.task_modules if modules is None else modules
-        self.logger = logger
         self.options = options
         self.Monitor = monitor_cls or self.Monitor
         self._monitor = None
         self._hashes = None
 
     def body(self):
-        files = [sys.modules[m].__file__ for m in self.modules]
+        files = [module_file(sys.modules[m]) for m in self.modules]
         self._monitor = self.Monitor(files, self.on_change,
                 shutdown_event=self._is_shutdown, **self.options)
         self._hashes = dict([(f, file_hash(f)) for f in files])
@@ -233,7 +235,7 @@ class Autoreloader(bgThread):
         modified = [f for f in files if self._maybe_modified(f)]
         if modified:
             names = [self._module_name(module) for module in modified]
-            self.logger.info("Detected modified modules: %r", names)
+            logger.info("Detected modified modules: %r", names)
             self._reload(names)
 
     def _reload(self, modules):

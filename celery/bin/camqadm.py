@@ -6,7 +6,7 @@
 """
 from __future__ import absolute_import
 
-if __name__ == "__main__" and __package__ is None:
+if __name__ == "__main__" and globals.get("__package__") is None:
     __package__ = "celery.bin.celeryctl"
 
 import cmd
@@ -18,8 +18,8 @@ from itertools import count
 
 from amqplib import client_0_8 as amqp
 
-from ..app import app_or_default
-from ..utils.functional import padlist
+from celery.app import app_or_default
+from celery.utils.functional import padlist
 
 from .base import Command
 

@@ -25,14 +25,14 @@
 from __future__ import with_statement
 from __future__ import absolute_import
 
-if __name__ == "__main__" and __package__ is None:
+if __name__ == "__main__" and globals().get("__package__") is None:
     __package__ = "celery.bin.celerybeat"
 
 import os
 
 from functools import partial
 
-from ..platforms import detached
+from celery.platforms import detached
 
 from .base import Command, Option, daemon_options
 

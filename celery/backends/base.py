@@ -10,12 +10,13 @@ from datetime import timedelta
 from kombu import serialization
 from kombu.utils.encoding import bytes_to_str, ensure_bytes, from_utf8
 
-from .. import states
-from ..app import current_task
-from ..datastructures import LRUCache
-from ..exceptions import TimeoutError, TaskRevokedError
-from ..utils import timeutils
-from ..utils.serialization import (
+from celery import states
+from celery.app import current_task
+from celery.datastructures import LRUCache
+from celery.exceptions import TimeoutError, TaskRevokedError
+from celery.result import from_serializable
+from celery.utils import timeutils
+from celery.utils.serialization import (
         get_pickled_exception,
         get_pickleable_exception,
         create_exception_cls,
@@ -47,7 +48,7 @@ class BaseBackend(object):
     supports_native_join = False
 
     def __init__(self, *args, **kwargs):
-        from ..app import app_or_default
+        from celery.app import app_or_default
         self.app = app_or_default(kwargs.get("app"))
         self.serializer = kwargs.get("serializer",
                                      self.app.conf.CELERY_RESULT_SERIALIZER)
@@ -403,7 +404,7 @@ class KeyValueStoreBackend(BaseDictBackend):
 
     def _save_taskset(self, taskset_id, result):
         self.set(self.get_key_for_taskset(taskset_id),
-                 self.encode({"result": result}))
+                 self.encode({"result": result.serializable()}))
         return result
 
     def _delete_taskset(self, taskset_id):
@@ -419,8 +420,15 @@ class KeyValueStoreBackend(BaseDictBackend):
     def _restore_taskset(self, taskset_id):
         """Get task metadata for a task by id."""
         meta = self.get(self.get_key_for_taskset(taskset_id))
+        # previously this was always pickled, but later this
+        # was extended to support other serializers, so the
+        # structure is kind of weird.
         if meta:
-            return self.decode(meta)
+            meta = self.decode(meta)
+            result = meta["result"]
+            if isinstance(result, (list, tuple)):
+                return {"result": from_serializable(result)}
+            return meta
 
 
 class DisabledBackend(BaseBackend):

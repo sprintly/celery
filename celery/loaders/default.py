@@ -15,9 +15,9 @@ import os
 import sys
 import warnings
 
-from ..datastructures import AttributeDict
-from ..exceptions import NotConfigured
-from ..utils.imports import NotAPackage, find_module
+from celery.datastructures import AttributeDict
+from celery.exceptions import NotConfigured
+from celery.utils.imports import NotAPackage, find_module
 
 from .base import BaseLoader
 
@@ -73,13 +73,3 @@ class Loader(BaseLoader):
 
     def wanted_module_item(self, item):
         return item[0].isupper() and not item.startswith("_")
-
-    def on_worker_init(self):
-        """Imports modules at worker init so tasks can be registered
-        and used by the worked.
-
-        The list of modules to import is taken from the
-        :setting:`CELERY_IMPORTS` setting.
-
-        """
-        self.import_default_modules()

@@ -15,11 +15,11 @@ from datetime import timedelta
 
 from kombu import BrokerConnection, Exchange
 from kombu import compat as messaging
-from kombu.pools import ProducerPool
+from kombu import pools
 
-from .. import signals
-from ..utils import cached_property, lpmerge, uuid
-from ..utils import text
+from celery import signals
+from celery.utils import cached_property, lpmerge, uuid
+from celery.utils import text
 
 from . import routes as _routes
 
@@ -259,7 +259,7 @@ class TaskPublisher(messaging.Publisher):
             self.close()
 
 
-class PublisherPool(ProducerPool):
+class PublisherPool(pools.ProducerPool):
 
     def __init__(self, app):
         self.app = app

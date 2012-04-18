@@ -2,9 +2,10 @@
 from __future__ import absolute_import
 from __future__ import with_statement
 
-if __name__ == "__main__" and __package__ is None:
+if __name__ == "__main__" and globals().get("__package__") is None:
     __package__ = "celery.bin.celery"
 
+import anyjson
 import sys
 
 from importlib import import_module
@@ -12,17 +13,15 @@ from optparse import OptionParser, make_option as Option
 from pprint import pformat
 from textwrap import wrap
 
-from anyjson import deserialize
+from celery import __version__
+from celery.app import app_or_default, current_app
+from celery.platforms import EX_OK, EX_FAILURE, EX_UNAVAILABLE, EX_USAGE
+from celery.utils import term
+from celery.utils.imports import symbol_by_name
+from celery.utils.text import pluralize
+from celery.utils.timeutils import maybe_iso8601
 
-from .. import __version__
-from ..app import app_or_default, current_app
-from ..platforms import EX_OK, EX_FAILURE, EX_UNAVAILABLE, EX_USAGE
-from ..utils import term
-from ..utils.imports import symbol_by_name
-from ..utils.text import pluralize
-from ..utils.timeutils import maybe_iso8601
-
-from ..bin.base import Command as BaseCommand
+from .base import Command as BaseCommand
 
 HELP = """
 Type '%(prog_name)s <command> --help' for help using
@@ -171,9 +170,9 @@ amqp = create_delegate("amqp", "celery.bin.camqadm:AMQPAdminCommand")
 class list_(Command):
     args = "[bindings]"
 
-    def list_bindings(self, channel):
+    def list_bindings(self, management):
         try:
-            bindings = channel.list_bindings()
+            bindings = management.get_bindings()
         except NotImplementedError:
             raise Error("Your transport cannot list bindings.")
 
@@ -181,8 +180,8 @@ class list_(Command):
                                                      e.ljust(28), r))
         fmt("Queue", "Exchange", "Routing Key")
         fmt("-" * 16, "-" * 16, "-" * 16)
-        for binding in bindings:
-            fmt(*binding)
+        for b in bindings:
+            fmt(b["destination"], b["source"], b["routing_key"])
 
     def run(self, what=None, *_, **kw):
         topics = {"bindings": self.list_bindings}
@@ -194,8 +193,7 @@ class list_(Command):
                             what, available))
         with self.app.broker_connection() as conn:
             self.app.amqp.get_task_consumer(conn).declare()
-            with conn.channel() as channel:
-                return topics[what](channel)
+            topics[what](conn.manager)
 list_ = command(list_, "list")
 
 
@@ -217,12 +215,12 @@ class apply(Command):
         # Positional args.
         args = kw.get("args") or ()
         if isinstance(args, basestring):
-            args = deserialize(args)
+            args = anyjson.loads(args)
 
         # Keyword args.
         kwargs = kw.get("kwargs") or {}
         if isinstance(kwargs, basestring):
-            kwargs = deserialize(kwargs)
+            kwargs = anyjson.loads(kwargs)
 
         # Expires can be int/float.
         expires = kw.get("expires") or None
@@ -250,9 +248,8 @@ apply = command(apply)
 class purge(Command):
 
     def run(self, *args, **kwargs):
-        app = current_app()
-        queues = len(app.amqp.queues.keys())
-        messages_removed = app.control.discard_all()
+        queues = len(current_app.amqp.queues.keys())
+        messages_removed = current_app.control.discard_all()
         if messages_removed:
             self.out("Purged %s %s from %s known task %s." % (
                 messages_removed, pluralize(messages_removed, "message"),
@@ -386,7 +383,7 @@ class migrate(Command):
         if len(args) != 2:
             return self.show_help("migrate")
         from kombu import BrokerConnection
-        from ..contrib.migrate import migrate_tasks
+        from celery.contrib.migrate import migrate_tasks
 
         migrate_tasks(BrokerConnection(args[0]),
                       BrokerConnection(args[1]),
@@ -423,18 +420,20 @@ class shell(Command):
             import_module("celery.concurrency.eventlet")
         if gevent:
             import_module("celery.concurrency.gevent")
-        from .. import task
+        import celery
+        import celery.task.base
         self.app.loader.import_default_modules()
         self.locals = {"celery": self.app,
-                       "BaseTask": task.BaseTask,
-                       "TaskSet": task.TaskSet,
-                       "chord": task.chord,
-                       "group": task.group,
-                       "chain": task.chain}
+                       "BaseTask": celery.task.base.BaseTask,
+                       "chord": celery.chord,
+                       "group": celery.group,
+                       "chain": celery.chain,
+                       "subtask": celery.subtask}
 
         if not without_tasks:
             self.locals.update(dict((task.__name__, task)
-                                for task in self.app.tasks.itervalues()))
+                                for task in self.app.tasks.itervalues()
+                                    if not task.name.startswith("celery.")))
 
         if force_python:
             return self.invoke_fallback_shell()

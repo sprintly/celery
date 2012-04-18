@@ -23,12 +23,13 @@ import traceback
 
 from kombu.utils.finalize import Finalize
 
-from .. import concurrency as _concurrency
-from ..app import app_or_default
-from ..app.abstract import configurated, from_config
-from ..exceptions import SystemTerminate
-from ..utils.functional import noop
-from ..utils.imports import qualname, reload_from_cwd
+from celery import concurrency as _concurrency
+from celery.app import app_or_default, set_default_app
+from celery.app.abstract import configurated, from_config
+from celery.exceptions import SystemTerminate
+from celery.utils.functional import noop
+from celery.utils.imports import qualname, reload_from_cwd
+from celery.utils.log import get_logger
 
 from . import abstract
 from . import state
@@ -37,6 +38,8 @@ from .buckets import TaskBucket, FastQueue
 RUN = 0x1
 CLOSE = 0x2
 TERMINATE = 0x3
+
+logger = get_logger(__name__)
 
 
 class Namespace(abstract.Namespace):
@@ -84,13 +87,13 @@ class Pool(abstract.StartStopComponent):
 
     def create(self, w):
         pool = w.pool = self.instantiate(w.pool_cls, w.min_concurrency,
-                                logger=w.logger,
                                 initargs=(w.app, w.hostname),
                                 maxtasksperchild=w.max_tasks_per_child,
                                 timeout=w.task_time_limit,
                                 soft_timeout=w.task_soft_time_limit,
                                 putlocks=w.pool_putlocks,
-                                force_execv=w.force_execv)
+                                force_execv=w.force_execv,
+                                lost_worker_timeout=w.worker_lost_wait)
         return pool
 
 
@@ -108,9 +111,8 @@ class Beat(abstract.StartStopComponent):
         w.beat = None
 
     def create(self, w):
-        from ..beat import EmbeddedService
+        from celery.beat import EmbeddedService
         b = w.beat = EmbeddedService(app=w.app,
-                                     logger=w.logger,
                                      schedule_filename=w.schedule_filename,
                                      scheduler_cls=w.scheduler_cls)
         return b
@@ -191,21 +193,29 @@ class WorkController(configurated):
     prefetch_multiplier = from_config()
     state_db = from_config()
     disable_rate_limits = from_config()
+    worker_lost_wait = from_config()
 
     _state = None
     _running = 0
 
-    def __init__(self, loglevel=None, hostname=None, logger=None,
-            ready_callback=noop,
+    def __init__(self, loglevel=None, hostname=None, ready_callback=noop,
             queues=None, app=None, **kwargs):
         self.app = app_or_default(app or self.app)
+
+        # all new threads start without a current app, so if an app is not
+        # passed on to the thread it will fall back to the "default app",
+        # which then could be the wrong app.  So for the worker
+        # we set this to always return our app.  This is a hack,
+        # and means that only a single app can be used for workers
+        # running in the same process.
+        set_default_app(self.app)
+
         self._shutdown_complete = threading.Event()
         self.setup_defaults(kwargs, namespace="celeryd")
         self.app.select_queues(queues)  # select queues subset.
 
         # Options
         self.loglevel = loglevel or self.loglevel
-        self.logger = self.app.log.get_default_logger()
         self.hostname = hostname or socket.gethostname()
         self.ready_callback = ready_callback
         self._finalize = Finalize(self, self.stop, exitpriority=1)
@@ -214,8 +224,7 @@ class WorkController(configurated):
         # Initialize boot steps
         self.pool_cls = _concurrency.get_implementation(self.pool_cls)
         self.components = []
-        self.namespace = Namespace(app=self.app,
-                                   logger=self.logger).apply(self, **kwargs)
+        self.namespace = Namespace(app=self.app).apply(self, **kwargs)
 
     def start(self):
         """Starts the workers main loop."""
@@ -223,15 +232,15 @@ class WorkController(configurated):
 
         try:
             for i, component in enumerate(self.components):
-                self.logger.debug("Starting %s...", qualname(component))
+                logger.debug("Starting %s...", qualname(component))
                 self._running = i + 1
                 component.start()
-                self.logger.debug("%s OK!", qualname(component))
+                logger.debug("%s OK!", qualname(component))
         except SystemTerminate:
             self.terminate()
         except Exception, exc:
-            self.logger.error("Unrecoverable error: %r", exc,
-                              exc_info=True)
+            logger.error("Unrecoverable error: %r", exc,
+                         exc_info=True)
             self.stop()
         except (KeyboardInterrupt, SystemExit):
             self.stop()
@@ -246,9 +255,9 @@ class WorkController(configurated):
             request.task.execute(request, self.pool,
                                  self.loglevel, self.logfile)
         except Exception, exc:
-            self.logger.critical("Internal error %s: %s\n%s",
-                                 exc.__class__, exc, traceback.format_exc(),
-                                 exc_info=True)
+            logger.critical("Internal error %s: %s\n%s",
+                            exc.__class__, exc, traceback.format_exc(),
+                            exc_info=True)
         except SystemTerminate:
             self.terminate()
             raise
@@ -281,7 +290,7 @@ class WorkController(configurated):
         self._state = self.CLOSE
 
         for component in reversed(self.components):
-            self.logger.debug("%s %s...", what, qualname(component))
+            logger.debug("%s %s...", what, qualname(component))
             stop = component.stop
             if not warm:
                 stop = getattr(component, "terminate", None) or stop
@@ -299,18 +308,18 @@ class WorkController(configurated):
 
         for module in set(modules or ()):
             if module not in sys.modules:
-                self.logger.debug("importing module %s", module)
+                logger.debug("importing module %s", module)
                 imp(module)
             elif reload:
-                self.logger.debug("reloading module %s", module)
+                logger.debug("reloading module %s", module)
                 reload_from_cwd(sys.modules[module], reloader)
         self.pool.restart()
 
     def on_timer_error(self, einfo):
-        self.logger.error("Timer error: %r", einfo[1], exc_info=einfo)
+        logger.error("Timer error: %r", einfo[1], exc_info=einfo)
 
     def on_timer_tick(self, delay):
-        self.logger.debug("Scheduler wake-up! Next eta %s secs.", delay)
+        logger.debug("Scheduler wake-up! Next eta %s secs.", delay)
 
     @property
     def state(self):

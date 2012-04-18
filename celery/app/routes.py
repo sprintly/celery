@@ -12,10 +12,10 @@
 """
 from __future__ import absolute_import
 
-from ..exceptions import QueueNotFound
-from ..utils import lpmerge
-from ..utils.functional import firstmethod, mpromise
-from ..utils.imports import instantiate
+from celery.exceptions import QueueNotFound
+from celery.utils import lpmerge
+from celery.utils.functional import firstmethod, mpromise
+from celery.utils.imports import instantiate
 
 _first_route = firstmethod("route_for_task")
 
@@ -50,7 +50,7 @@ class Router(object):
                 return lpmerge(self.expand_destination(route), options)
         if "queue" not in options:
             options = lpmerge(self.expand_destination(
-                                self.app.conf.CELERY_DEFAULT_QUEUE), options)
+                              self.app.conf.CELERY_DEFAULT_QUEUE), options)
         return options
 
     def expand_destination(self, route):

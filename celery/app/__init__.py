@@ -13,17 +13,20 @@ from __future__ import absolute_import
 
 import os
 
-from ..local import Proxy
+from celery.local import Proxy
 
 from . import state
-from .base import App, AppPickler  # noqa
+from .state import (  # noqa
+        set_default_app,
+        get_current_app as current_app,
+        get_current_task as current_task,
+)
+from .base import Celery, AppPickler  # noqa
 
-set_default_app = state.set_default_app
-current_app = state.current_app
-current_task = state.current_task
+#: Proxy always returning the app set as default.
 default_app = Proxy(lambda: state.default_app)
 
-#: Returns the app provided or the default app if none.
+#: Function returning the app provided or the default app if none.
 #:
 #: The environment variable :envvar:`CELERY_TRACE_APP` is used to
 #: trace app leaks.  When enabled an exception is raised if there
@@ -34,18 +37,18 @@ app_or_default = None
 default_loader = os.environ.get("CELERY_LOADER") or "default"
 
 #: Global fallback app instance.
-set_default_app(App("default", loader=default_loader,
-                               set_as_current=False,
-                               accept_magic_kwargs=True))
+set_default_app(Celery("default", loader=default_loader,
+                                  set_as_current=False,
+                                  accept_magic_kwargs=True))
 
 
 def bugreport():
-    return current_app().bugreport()
+    return current_app.bugreport()
 
 
 def _app_or_default(app=None):
     if app is None:
-        return current_app()
+        return state.get_current_app()
     return app
 
 
@@ -78,3 +81,5 @@ if os.environ.get("CELERY_TRACE_APP"):  # pragma: no cover
     enable_trace()
 else:
     disable_trace()
+
+App = Celery  # XXX Compat
