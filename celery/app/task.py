@@ -14,14 +14,17 @@ from __future__ import absolute_import
 
 import logging
 import sys
-import threading
 
+from kombu import Exchange
 from kombu.utils import cached_property
 
 from celery import current_app
 from celery import states
+from celery.__compat__ import class_property
+from celery.state import get_current_task
 from celery.datastructures import ExceptionInfo
 from celery.exceptions import MaxRetriesExceededError, RetryTaskError
+from celery.local import LocalStack
 from celery.result import EagerResult
 from celery.utils import fun_takes_kwargs, uuid, maybe_reraise
 from celery.utils.functional import mattrgetter, maybe_list
@@ -30,7 +33,6 @@ from celery.utils.log import get_logger
 from celery.utils.mail import ErrorMail
 
 from .annotations import resolve_all as resolve_all_annotations
-from .state import get_current_task
 from .registry import _unpickle_task
 
 #: extracts options related to publishing a message from a dict.
@@ -38,10 +40,14 @@ extract_exec_options = mattrgetter("queue", "routing_key",
                                    "exchange", "immediate",
                                    "mandatory", "priority",
                                    "serializer", "delivery_mode",
-                                   "compression", "expires")
+                                   "compression", "expires", "bare")
 
 
-class Context(threading.local):
+class Context(object):
+    __slots__ = ("logfile", "loglevel", "hostname",
+                 "id", "args", "kwargs", "retries", "is_eager",
+                 "delivery_info", "taskset", "chord", "called_directly",
+                 "callbacks", "errbacks", "children", "__dict__")
     # Default context
     logfile = None
     loglevel = None
@@ -57,29 +63,24 @@ class Context(threading.local):
     called_directly = True
     callbacks = None
     errbacks = None
-    _children = None   # see property
+    children = None   # see property
 
-    def update(self, d, **kwargs):
-        self.__dict__.update(d, **kwargs)
-
-    def clear(self):
-        self.__dict__.clear()
-
-    def get(self, key, default=None):
-        try:
-            return getattr(self, key)
-        except AttributeError:
-            return default
+    def __init__(self, *args, **kwargs):
+        up = self.update = self.__dict__.update
+        self.clear = self.__dict__.clear
+        self.get = self.__dict__.get
+        up(*args, children=[], **kwargs)
 
     def __repr__(self):
-        return "<Context: %r>" % (vars(self, ))
+        return repr(self._vars())
 
-    @property
-    def children(self):
-        # children must be an empy list for every thread
-        if self._children is None:
-            self._children = []
-        return self._children
+    def __reduce__(self):
+        return self.__class__, (self._vars(), )
+
+    def _vars(self):
+        return dict((k, v) for k, v in vars(self).iteritems()
+                                if k not in ("clear", "get", "update"))
+
 
 
 class TaskType(type):
@@ -115,7 +116,7 @@ class TaskType(type):
             except KeyError:  # pragma: no cover
                 # Fix for manage.py shell_plus (Issue #366).
                 module_name = task_module
-            attrs["name"] = '.'.join([module_name, name])
+            attrs["name"] = '.'.join(filter(None, [module_name, name]))
             autoname = True
 
         # - Create and register class.
@@ -157,6 +158,9 @@ class BaseTask(object):
     #: Execution strategy used, or the qualified name of one.
     Strategy = "celery.worker.strategy:default"
 
+    #: This is the instance bound to if the task is a method of a class.
+    __self__ = None
+
     #: The application instance associated with this task class.
     _app = None
 
@@ -168,10 +172,7 @@ class BaseTask(object):
 
     #: If disabled the worker will not forward magic keyword arguments.
     #: Deprecated and scheduled for removal in v3.0.
-    accept_magic_kwargs = False
-
-    #: Request context (set when task is applied).
-    request = Context()
+    accept_magic_kwargs = None
 
     #: Destination queue.  The queue needs to exist
     #: in :setting:`CELERY_QUEUES`.  The `routing_key`, `exchange` and
@@ -235,7 +236,7 @@ class BaseTask(object):
 
     #: The name of a serializer that are registered with
     #: :mod:`kombu.serialization.registry`.  Default is `"pickle"`.
-    serializer = "pickle"
+    serializer = None
 
     #: Hard time limit.
     #: Defaults to the :setting:`CELERY_TASK_TIME_LIMIT` setting.
@@ -274,7 +275,7 @@ class BaseTask(object):
     #:
     #: The application default can be overridden with the
     #: :setting:`CELERY_ACKS_LATE` setting.
-    acks_late = False
+    acks_late = None
 
     #: Default task expiry time.
     expires = None
@@ -303,40 +304,64 @@ class BaseTask(object):
     # - Tasks are lazily bound, so that configuration is not set
     # - until the task is actually used
 
+    @classmethod
     def bind(self, app):
-        self.__bound__ = True
+        was_bound, self.__bound__ = self.__bound__, True
         self._app = app
         conf = app.conf
 
         for attr_name, config_name in self.from_config:
             if getattr(self, attr_name, None) is None:
                 setattr(self, attr_name, conf[config_name])
-        self.accept_magic_kwargs = app.accept_magic_kwargs
         if self.accept_magic_kwargs is None:
             self.accept_magic_kwargs = app.accept_magic_kwargs
         if self.backend is None:
             self.backend = app.backend
 
         # decorate with annotations from config.
-        self.annotate()
+        if not was_bound:
+            self.annotate()
+
+        self.request_stack = LocalStack()
+        self.request_stack.push(Context())
 
         # PeriodicTask uses this to add itself to the PeriodicTask schedule.
         self.on_bound(app)
 
         return app
 
+    @classmethod
     def on_bound(self, app):
         """This method can be defined to do additional actions when the
         task class is bound to an app."""
         pass
 
+    @classmethod
     def _get_app(self):
         if not self.__bound__ or self._app is None:
             # The app property's __set__  method is not called
             # if Task.app is set (on the class), so must bind on use.
             self.bind(current_app)
         return self._app
-    app = property(_get_app, bind)
+    app = class_property(_get_app, bind)
+
+    @classmethod
+    def annotate(self):
+        for d in resolve_all_annotations(self.app.annotations, self):
+            for key, value in d.iteritems():
+                if key.startswith('@'):
+                    self.add_around(key[1:], value)
+                else:
+                    setattr(self, key, value)
+
+    @classmethod
+    def add_around(self, attr, around):
+        orig = getattr(self, attr)
+        if getattr(orig, "__wrapped__", None):
+            orig = orig.__wrapped__
+        meth = around(orig)
+        meth.__wrapped__ = orig
+        setattr(self, attr, meth)
 
     def __call__(self, *args, **kwargs):
         return self.run(*args, **kwargs)
@@ -369,7 +394,7 @@ class BaseTask(object):
             connect_timeout=None, exchange_type=None, **options):
         """Get a celery task message publisher.
 
-        :rtype :class:`~celery.app.amqp.TaskPublisher`:
+        :rtype :class:`~celery.app.amqp.TaskProducer`:
 
         .. warning::
 
@@ -381,23 +406,16 @@ class BaseTask(object):
                 >>> # ... do something with publisher
                 >>> publisher.connection.close()
 
-            or used as a context::
-
-                >>> with self.get_publisher() as publisher:
-                ...     # ... do something with publisher
-
         """
         exchange = self.exchange if exchange is None else exchange
         if exchange_type is None:
             exchange_type = self.exchange_type
         connection = connection or self.establish_connection(connect_timeout)
-        return self._get_app().amqp.TaskPublisher(connection=connection,
-                                           exchange=exchange,
-                                           exchange_type=exchange_type,
-                                           routing_key=self.routing_key,
-                                           **options)
+        return self._get_app().amqp.TaskProducer(connection,
+                exchange=exchange and Exchange(exchange, exchange_type),
+                routing_key=self.routing_key, **options)
 
-    def get_consumer(self, connection=None, connect_timeout=None):
+    def get_consumer(self, connection=None, queues=None, **kwargs):
         """Get message consumer.
 
         :rtype :class:`kombu.messaging.Consumer`:
@@ -414,10 +432,10 @@ class BaseTask(object):
                 >>> consumer.connection.close()
 
         """
-        connection = connection or self.establish_connection(connect_timeout)
-        return self._get_app().amqp.TaskConsumer(connection=connection,
-                                          exchange=self.exchange,
-                                          routing_key=self.routing_key)
+        app = self._get_app()
+        connection = connection or self.establish_connection()
+        return app.amqp.TaskConsumer(connection,
+            queues or app.amqp.queue_or_default(self.queue), **kwargs)
 
     def delay(self, *args, **kwargs):
         """Star argument version of :meth:`apply_async`.
@@ -434,7 +452,7 @@ class BaseTask(object):
 
     def apply_async(self, args=None, kwargs=None,
             task_id=None, publisher=None, connection=None,
-            router=None, queues=None, link=None, link_error=None, **options):
+            router=None, link=None, link_error=None, **options):
         """Apply tasks asynchronously by sending a message.
 
         :keyword args: The positional arguments to pass on to the
@@ -522,14 +540,20 @@ class BaseTask(object):
 
         """
         app = self._get_app()
-        router = app.amqp.Router(queues)
+        router = router or self.app.amqp.router
         conf = app.conf
+
+        # add 'self' if this is a bound method.
+        if self.__self__ is not None:
+            args = (self.__self__, ) + tuple(args)
 
         if conf.CELERY_ALWAYS_EAGER:
             return self.apply(args, kwargs, task_id=task_id, **options)
         options = dict(extract_exec_options(self), **options)
         options = router.route(options, self.name, args, kwargs)
 
+        if connection:
+            publisher = app.amqp.TaskProducer(connection)
         publish = publisher or app.amqp.publisher_pool.acquire(block=True)
         evd = None
         if conf.CELERY_SEND_TASK_SENT_EVENT:
@@ -591,7 +615,7 @@ class BaseTask(object):
             ...         twitter.post_status_update(message)
             ...     except twitter.FailWhale, exc:
             ...         # Retry in 5 minutes.
-            ...         return tweet.retry(countdown=60 * 5, exc=exc)
+            ...         raise tweet.retry(countdown=60 * 5, exc=exc)
 
         Although the task will never return above as `retry` raises an
         exception to notify the worker, we use `return` in front of the retry
@@ -632,13 +656,14 @@ class BaseTask(object):
         # If task was executed eagerly using apply(),
         # then the retry must also be executed eagerly.
         if request.is_eager:
-            return self.apply(args=args, kwargs=kwargs, **options).get()
-
-        self.apply_async(args=args, kwargs=kwargs, **options)
+            self.apply(args=args, kwargs=kwargs, **options).get()
+        else:
+            self.apply_async(args=args, kwargs=kwargs, **options)
+        ret = RetryTaskError(eta and "Retry at %s" % eta
+                                  or "Retry in %s secs." % countdown, exc)
         if throw:
-            raise RetryTaskError(
-                eta and "Retry at %s" % (eta, )
-                     or "Retry in %s secs." % (countdown, ), exc)
+            raise ret
+        return ret
 
     def apply(self, args=None, kwargs=None, **options):
         """Execute this task locally, by blocking until the task returns.
@@ -686,13 +711,12 @@ class BaseTask(object):
                                         if key in supported_keys)
             kwargs.update(extend_with)
 
+        tb = None
         retval, info = eager_trace_task(task, task_id, args, kwargs,
                                         request=request, propagate=throw)
         if isinstance(retval, ExceptionInfo):
-            retval = retval.exception
-        state, tb = states.SUCCESS, ''
-        if info is not None:
-            state, tb = info.state, info.strtb
+            retval, tb = retval.exception, retval.traceback
+        state = states.SUCCESS if info is None else info.state
         return EagerResult(task_id, retval, state, traceback=tb)
 
     def AsyncResult(self, task_id):
@@ -715,17 +739,54 @@ class BaseTask(object):
         """``.s(*a, **k) -> .subtask(a, k)``"""
         return self.subtask(args, kwargs)
 
+    def si(self, *args, **kwargs):
+        """``.si(*a, **k) -> .subtask(a, k, immutable=True)``"""
+        return self.subtask(args, kwargs, immutable=True)
+
+    def chunks(self, it, n):
+        """Creates a :class:`~celery.canvas.chunks` task for this task."""
+        from celery import chunks
+        return chunks(self.s(), it, n)
+
+    def map(self, it):
+        """Creates a :class:`~celery.canvas.xmap` task from ``it``."""
+        from celery import xmap
+        return xmap(self.s(), it)
+
+    def starmap(self, it):
+        """Creates a :class:`~celery.canvas.xstarmap` task from ``it``."""
+        from celery import xstarmap
+        return xstarmap(self.s(), it)
+
     def update_state(self, task_id=None, state=None, meta=None):
         """Update task state.
 
-        :param task_id: Id of the task to update.
-        :param state: New state (:class:`str`).
-        :param meta: State metadata (:class:`dict`).
+        :keyword task_id: Id of the task to update, defaults to the
+                          id of the current task
+        :keyword state: New state (:class:`str`).
+        :keyword meta: State metadata (:class:`dict`).
+
+
 
         """
         if task_id is None:
             task_id = self.request.id
         self.backend.store_result(task_id, meta, state)
+
+    def on_success(self, retval, task_id, args, kwargs):
+        """Success handler.
+
+        Run by the worker if the task executes successfully.
+
+        :param retval: The return value of the task.
+        :param task_id: Unique id of the executed task.
+        :param args: Original arguments for the executed task.
+        :param kwargs: Original keyword arguments for the executed task.
+
+        The return value of this handler is ignored.
+
+        """
+        pass
 
     def on_retry(self, exc, task_id, args, kwargs, einfo):
         """Retry handler.
@@ -736,6 +797,25 @@ class BaseTask(object):
         :param task_id: Unique id of the retried task.
         :param args: Original arguments for the retried task.
         :param kwargs: Original keyword arguments for the retried task.
+
+        :keyword einfo: :class:`~celery.datastructures.ExceptionInfo`
+                        instance, containing the traceback.
+
+        The return value of this handler is ignored.
+
+        """
+        pass
+
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        """Error handler.
+
+        This is run by the worker when the task fails.
+
+        :param exc: The exception raised by the task.
+        :param task_id: Unique id of the failed task.
+        :param args: Original arguments for the task that failed.
+        :param kwargs: Original keyword arguments for the task
+                       that failed.
 
         :keyword einfo: :class:`~celery.datastructures.ExceptionInfo`
                         instance, containing the traceback.
@@ -763,44 +843,9 @@ class BaseTask(object):
         """
         pass
 
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
-        """Error handler.
-
-        This is run by the worker when the task fails.
-
-        :param exc: The exception raised by the task.
-        :param task_id: Unique id of the failed task.
-        :param args: Original arguments for the task that failed.
-        :param kwargs: Original keyword arguments for the task
-                       that failed.
-
-        :keyword einfo: :class:`~celery.datastructures.ExceptionInfo`
-                        instance, containing the traceback.
-
-        The return value of this handler is ignored.
-
-        """
-        pass
-
     def send_error_email(self, context, exc, **kwargs):
         if self.send_error_emails and not self.disable_error_emails:
-            sender = self.ErrorMail(self, **kwargs)
-            sender.send(context, exc)
-
-    def on_success(self, retval, task_id, args, kwargs):
-        """Success handler.
-
-        Run by the worker if the task executes successfully.
-
-        :param retval: The return value of the task.
-        :param task_id: Unique id of the executed task.
-        :param args: Original arguments for the executed task.
-        :param kwargs: Original keyword arguments for the executed task.
-
-        The return value of this handler is ignored.
-
-        """
-        pass
+            self.ErrorMail(self, **kwargs).send(context, exc)
 
     def execute(self, request, pool, loglevel, logfile, **kwargs):
         """The method the worker calls to execute the task.
@@ -815,9 +860,11 @@ class BaseTask(object):
         """
         request.execute_using_pool(pool, loglevel, logfile)
 
-    def annotate(self):
-        for d in resolve_all_annotations(self.app.annotations, self):
-            self.__dict__.update(d)
+    def push_request(self, *args, **kwargs):
+        self.request_stack.push(Context(*args, **kwargs))
+
+    def pop_request(self):
+        self.request_stack.pop()
 
     def __repr__(self):
         """`repr(task)`"""
@@ -826,6 +873,10 @@ class BaseTask(object):
     @cached_property
     def logger(self):
         return self.get_logger()
+
+    @property
+    def request(self):
+        return self.request_stack.top
 
     @property
     def __name__(self):

@@ -12,11 +12,16 @@ from celery.utils.log import get_logger
 
 logger = get_logger("celery.concurrency")
 
+_pid = None
+
 
 def apply_target(target, args=(), kwargs={}, callback=None,
-        accept_callback=None, pid=None, **_):
+        accept_callback=None, pid=None, nowfun=time.time, **_):
+    if pid is None:
+        global _pid
+        pid = _pid = os.getpid() if _pid is None else _pid
     if accept_callback:
-        accept_callback(pid or os.getpid(), time.time())
+        accept_callback(pid, nowfun())
     callback(target(*args, **kwargs))
 
 
@@ -46,6 +51,9 @@ class BasePool(object):
     _state = None
     _pool = None
 
+    #: only used by multiprocessing pool
+    uses_semaphore = False
+
     def __init__(self, limit=None, putlocks=True, **options):
         self.limit = limit
         self.putlocks = putlocks
@@ -55,6 +63,9 @@ class BasePool(object):
     def on_start(self):
         pass
 
+    def did_start_ok(self):
+        return True
+
     def on_stop(self):
         pass
 
@@ -62,6 +73,15 @@ class BasePool(object):
         pass
 
     def on_terminate(self):
+        pass
+
+    def on_soft_timeout(self, job):
+        pass
+
+    def on_hard_timeout(self, job):
+        pass
+
+    def maintain_pool(self, *args, **kwargs):
         pass
 
     def terminate_job(self, pid):
@@ -73,7 +93,6 @@ class BasePool(object):
                 "%s does not implement restart" % (self.__class__, ))
 
     def stop(self):
-        self._state = self.CLOSE
         self.on_stop()
         self._state = self.TERMINATE
 
@@ -84,6 +103,16 @@ class BasePool(object):
     def start(self):
         self.on_start()
         self._state = self.RUN
+
+    def close(self):
+        self._state = self.CLOSE
+        self.on_close()
+
+    def on_close(self):
+        pass
+
+    def init_callbacks(self, **kwargs):
+        pass
 
     def apply_async(self, target, args=[], kwargs={}, **options):
         """Equivalent of the :func:`apply` built-in function.
@@ -114,3 +143,15 @@ class BasePool(object):
     @property
     def num_processes(self):
         return self.limit
+
+    @property
+    def readers(self):
+        return {}
+
+    @property
+    def writers(self):
+        return {}
+
+    @property
+    def timers(self):
+        return {}

@@ -4,7 +4,7 @@
 
 .. image:: http://cloud.github.com/downloads/ask/celery/celery_128.png
 
-:Version: 2.6.0a2
+:Version: 2.6.0rc3
 :Web: http://celeryproject.org/
 :Download: http://pypi.python.org/pypi/celery/
 :Source: http://github.com/ask/celery/
@@ -43,17 +43,19 @@ databases (using `SQLAlchemy`_ or the `Django ORM`_) is also available.
 Celery is easy to integrate with web frameworks, some of which even have
 integration packages:
 
-    +-----------------+------------------------+
-    | `Django`_       | `django-celery`_       |
-    +-----------------+------------------------+
-    | `Pyramid`_      | `pyramid_celery`_      |
-    +-----------------+------------------------+
-    | `Pylons`_       | `celery-pylons`_       |
-    +-----------------+------------------------+
-    | `Flask`_        | `flask-celery`_        |
-    +-----------------+------------------------+
-    | `web2py`_       | `web2py-celery`_       |
-    +-----------------+------------------------+
+    +--------------------+------------------------+
+    | `Django`_          | `django-celery`_       |
+    +--------------------+------------------------+
+    | `Pyramid`_         | `pyramid_celery`_      |
+    +--------------------+------------------------+
+    | `Pylons`_          | `celery-pylons`_       |
+    +--------------------+------------------------+
+    | `Flask`_           | `flask-celery`_        |
+    +--------------------+------------------------+
+    | `web2py`_          | `web2py-celery`_       |
+    +--------------------+------------------------+
+    | `Tornado`_         | `tornado-celery`_      |
+    +--------------------+------------------------+
 
 .. _`RCelery`: http://leapfrogdevelopment.github.com/rcelery/
 .. _`PHP client`: https://github.com/gjedeer/celery-php
@@ -78,6 +80,8 @@ integration packages:
 .. _`celery-pylons`: http://pypi.python.org/pypi/celery-pylons
 .. _`flask-celery`: http://github.com/ask/flask-celery/
 .. _`web2py-celery`: http://code.google.com/p/web2py-celery/
+.. _`Tornado`: http://www.tornadoweb.org/
+.. _`tornado-celery`: http://github.com/mher/tornado-celery/
 .. _`operate with other languages using webhooks`:
     http://ask.github.com/celery/userguide/remote-tasks.html
 .. _`limited support`:

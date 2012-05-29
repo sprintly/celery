@@ -11,7 +11,7 @@ from .base import KeyValueStoreBackend
 try:
     import redis
     from redis.exceptions import ConnectionError
-except ImportError:
+except ImportError:         # pragma: no cover
     redis = None            # noqa
     ConnectionError = None  # noqa
 
@@ -38,6 +38,7 @@ class RedisBackend(KeyValueStoreBackend):
     max_connections = None
 
     supports_native_join = True
+    implements_incr = True
 
     def __init__(self, host=None, port=None, db=None, password=None,
             expires=None, max_connections=None, url=None, **kwargs):
@@ -61,6 +62,7 @@ class RedisBackend(KeyValueStoreBackend):
         uhost = uport = upass = udb = None
         if url:
             _, uhost, uport, _, upass, udb, _ = _parse_url(url)
+            udb = udb.strip("/")
         self.host = uhost or host or _get("HOST") or self.host
         self.port = int(uport or port or _get("PORT") or self.port)
         self.db = udb or db or _get("DB") or self.db
@@ -87,23 +89,11 @@ class RedisBackend(KeyValueStoreBackend):
     def delete(self, key):
         self.client.delete(key)
 
-    def on_chord_apply(self, setid, body, result=None, **kwargs):
-        self.app.TaskSetResult(setid, result).save()
+    def incr(self, key):
+        return self.client.incr(key)
 
-    def on_chord_part_return(self, task, propagate=False):
-        from celery import subtask
-        from celery.result import TaskSetResult
-        setid = task.request.taskset
-        if not setid:
-            return
-        key = self.get_key_for_chord(setid)
-        deps = TaskSetResult.restore(setid, backend=task.backend)
-        if self.client.incr(key) >= deps.total:
-            subtask(task.request.chord).delay(deps.join(propagate=propagate))
-            deps.delete()
-            self.client.delete(key)
-        else:
-            self.client.expire(key, 86400)
+    def expire(self, key, value):
+        return self.client.expire(key, value)
 
     @cached_property
     def client(self):

@@ -5,7 +5,7 @@
 
 from __future__ import absolute_import
 
-VERSION = (2, 6, 0, "a2")
+VERSION = (2, 6, 0, "rc3")
 __version__ = ".".join(map(str, VERSION[0:3])) + "".join(VERSION[3:])
 __author__ = "Ask Solem"
 __contact__ = "ask@celeryproject.org"
@@ -17,12 +17,13 @@ __docformat__ = "restructuredtext"
 # Lazy loading
 from .__compat__ import recreate_module
 
-
-old_module, new_module = recreate_module(__name__,
+old_module, new_module = recreate_module(__name__,  # pragma: no cover
     by_module={
         "celery.app":       ["Celery", "bugreport"],
-        "celery.app.state": ["current_app", "current_task"],
-        "celery.canvas":    ["chain", "chord", "group", "subtask"],
+        "celery.state":     ["current_app", "current_task"],
+        "celery.canvas":    ["chain", "chord", "chunks",
+                             "group", "subtask", "xmap", "xstarmap"],
+        "celery.utils":     ["uuid"],
     },
     direct={"task": "celery.task"},
     __package__="celery",

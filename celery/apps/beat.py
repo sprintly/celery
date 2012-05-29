@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-import atexit
 import socket
 import sys
 
@@ -68,8 +67,7 @@ class Beat(configurated):
     def start_scheduler(self):
         c = self.colored
         if self.pidfile:
-            pidlock = platforms.create_pidlock(self.pidfile).acquire()
-            atexit.register(pidlock.release)
+            platforms.create_pidlock(self.pidfile)
         beat = self.Service(app=self.app,
                             max_interval=self.max_interval,
                             scheduler_cls=self.scheduler_cls,

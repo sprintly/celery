@@ -70,6 +70,14 @@ restart the worker using the :sig:`HUP` signal::
 The worker will then replace itself with a new instance using the same
 arguments as it was started with.
 
+.. note::
+
+    This will only work if ``celeryd`` is running in the background as
+    a daemon (it does not have a controlling terminal).
+
+    Restarting by HUP is disabled on OS X because of a limitation on
+    that platform.
+
 .. _worker-concurrency:
 
 Concurrency
@@ -103,12 +111,18 @@ specify a file for these to be stored in, either by using the `--statedb`
 argument to :mod:`~celery.bin.celeryd` or the :setting:`CELERYD_STATE_DB`
 setting.  See :setting:`CELERYD_STATE_DB` for more information.
 
+Note that remote control commands must be working for revokes to work.
+Remote control commands are only supported by the amqp, redis and mongodb
+transports at this point.
+
 .. _worker-time-limits:
 
 Time limits
 ===========
 
 .. versionadded:: 2.0
+
+:supported pools: processes
 
 A single task can potentially run forever, if you have lots of tasks
 waiting for some event that will never happen you will block the worker
@@ -166,6 +180,8 @@ Max tasks per child setting
 
 .. versionadded:: 2.0
 
+:supported pools: processes
+
 With this option you can configure the maximum number of tasks
 a worker can execute before it's replaced by a new process.
 
@@ -181,6 +197,8 @@ Autoreloading
 =============
 
 .. versionadded:: 2.5
+
+:supported pools: processes, eventlet, gevent, threads, solo
 
 Starting :program:`celeryd` with the :option:`--autoreload` option will
 enable the worker to watch for file system changes to all imported task
@@ -231,6 +249,9 @@ Remote control
 
 .. versionadded:: 2.0
 
+:supported pools: processes, eventlet, gevent, blocking:threads/solo (see note)
+:supported transports: amqp, redis, mongodb
+
 Workers have the ability to be remote controlled using a high-priority
 broadcast message queue.  The commands can be directed to all, or a specific
 list of workers.
@@ -254,6 +275,13 @@ to the number of destination hosts.
     The :program:`celeryctl` program is used to execute remote control
     commands from the command line.  It supports all of the commands
     listed below.  See :ref:`monitoring-celeryctl` for more information.
+
+.. note::
+
+    The solo and threads pool supports remote control commands,
+    but any task executing will block any waiting control command,
+    so it is of limited use if the worker is very busy.  In that
+    case you must increase the timeout waitin for replies in the client.
 
 .. _worker-broadcast-fun:
 

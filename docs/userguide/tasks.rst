@@ -35,17 +35,17 @@ Task options can be specified as arguments to the decorator:
 
 .. admonition:: How do I import the task decorator?
 
-The task decorator is available on your Celery instance,
-if you don't know what that is then please read :ref:`first-steps`.
+    The task decorator is available on your Celery instance,
+    if you don't know what that is then please read :ref:`first-steps`.
 
-If you're using Django or are still using the "old" module based celery API,
-then you can import the task decorator like this::
+    If you're using Django or are still using the "old" module based celery API,
+    then you can import the task decorator like this::
 
-    from celery import task
+        from celery import task
 
-    @task
-    def add(x, y):
-        return x + y
+        @task
+        def add(x, y):
+            return x + y
 
 .. _task-request-info:
 
@@ -133,7 +133,7 @@ of temporary failure.
             twitter = Twitter(oauth)
             twitter.update_status(tweet)
         except (Twitter.FailWhaleError, Twitter.LoginError), exc:
-            send_twitter_status.retry(exc=exc)
+            raise send_twitter_status.retry(exc=exc)
 
 Here we used the `exc` argument to pass the current exception to
 :meth:`@-Task.retry`. At each step of the retry this exception
@@ -173,8 +173,8 @@ override this default.
         try:
             ...
         except Exception, exc:
-            add.retry(exc=exc, countdown=60)  # override the default and
-                                              # retry in 1 minute
+            raise add.retry(exc=exc, countdown=60)  # override the default and
+                                                    # retry in 1 minute
 
 .. _task-options:
 

@@ -191,10 +191,6 @@ Can be one of the following:
     Use `Redis`_ to store the results.
     See :ref:`conf-redis-result-backend`.
 
-* tyrant
-    Use `Tokyo Tyrant`_ to store the results.
-    See :ref:`conf-tyrant-result-backend`.
-
 * amqp
     Send results back as AMQP messages
     See :ref:`conf-amqp-result-backend`.
@@ -212,7 +208,6 @@ Can be one of the following:
 .. _`memcached`: http://memcached.org
 .. _`MongoDB`: http://mongodb.org
 .. _`Redis`: http://code.google.com/p/redis/
-.. _`Tokyo Tyrant`: http://1978th.net/tokyotyrant/
 .. _`Cassandra`: http://cassandra.apache.org/
 
 .. setting:: CELERY_RESULT_SERIALIZER
@@ -383,42 +378,6 @@ setting:
                                     "behaviors": {"tcp_nodelay": True}}
 
 .. _`pylibmc`: http://sendapatch.se/projects/pylibmc/
-
-.. _conf-tyrant-result-backend:
-
-Tokyo Tyrant backend settings
------------------------------
-
-.. note::
-
-    The Tokyo Tyrant backend requires the :mod:`pytyrant` library:
-    http://pypi.python.org/pypi/pytyrant/
-
-This backend requires the following configuration directives to be set:
-
-.. setting:: TT_HOST
-
-TT_HOST
-~~~~~~~
-
-Host name of the Tokyo Tyrant server.
-
-.. setting:: TT_PORT
-
-TT_PORT
-~~~~~~~
-
-The port the Tokyo Tyrant server is listening to.
-
-
-Example configuration
-~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: python
-
-    CELERY_RESULT_BACKEND = "tyrant"
-    TT_HOST = "localhost"
-    TT_PORT = 1978
 
 .. _conf-redis-result-backend:
 
@@ -653,8 +612,16 @@ If enabled (default), any queues specified that is not defined in
 CELERY_DEFAULT_QUEUE
 ~~~~~~~~~~~~~~~~~~~~
 
-The queue used by default, if no custom queue is specified.  This queue must
-be listed in :setting:`CELERY_QUEUES`.  The default is: `celery`.
+The name of the default queue used by `.apply_async` if the message has
+no route or no custom queue has been specified.
+
+
+This queue must be listed in :setting:`CELERY_QUEUES`.
+If :setting:`CELERY_QUEUES` is not specified then it this automatically
+created containing one queue entry, where this name is used as the name of
+that queue.
+
+The default is: `celery`.
 
 .. seealso::
 
@@ -666,14 +633,17 @@ CELERY_DEFAULT_EXCHANGE
 ~~~~~~~~~~~~~~~~~~~~~~~
 
 Name of the default exchange to use when no custom exchange is
-specified.  The default is: `celery`.
+specified for a key in the :setting:`CELERY_QUEUES` setting.
+
+The default is: `celery`.
 
 .. setting:: CELERY_DEFAULT_EXCHANGE_TYPE
 
 CELERY_DEFAULT_EXCHANGE_TYPE
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Default exchange type used when no custom exchange is specified.
+Default exchange type used when no custom exchange type is specified.
+for a key in the :setting:`CELERY_QUEUES` setting.
 The default is: `direct`.
 
 .. setting:: CELERY_DEFAULT_ROUTING_KEY
@@ -681,7 +651,9 @@ The default is: `direct`.
 CELERY_DEFAULT_ROUTING_KEY
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The default routing key used when sending tasks.
+The default routing key used when no custom routing key
+is specified for a key in the :setting:`CELERY_QUEUES` setting.
+
 The default is: `celery`.
 
 .. setting:: CELERY_DEFAULT_DELIVERY_MODE
@@ -1048,6 +1020,14 @@ A sequence of modules to import when the celery daemon starts.
 This is used to specify the task modules to import, but also
 to import signal handlers and additional remote control commands, etc.
 
+.. setting:: CELERY_INCLUDE
+
+CELERY_INCLUDE
+~~~~~~~~~~~~~~
+
+Exact same semantics as :setting:`CELERY_IMPORTS`, but can be used as a means
+to have different import categories.
+
 .. setting:: CELERYD_FORCE_EXECV
 
 CELERYD_FORCE_EXECV
@@ -1140,10 +1120,10 @@ Can also be set via the :option:`--statedb` argument to
 
 Not enabled by default.
 
-.. setting:: CELERYD_ETA_SCHEDULER_PRECISION
+.. setting:: CELERYD_TIMER_PRECISION
 
-CELERYD_ETA_SCHEDULER_PRECISION
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+CELERYD_TIMER_PRECISION
+~~~~~~~~~~~~~~~~~~~~~~~
 
 Set the maximum time in seconds that the ETA scheduler can sleep between
 rechecking the schedule.  Default is 1 second.
@@ -1512,9 +1492,9 @@ CELERYD_MEDIATOR
 Name of the mediator class used by the worker.
 Default is :class:`celery.worker.controllers.Mediator`.
 
-.. setting:: CELERYD_ETA_SCHEDULER
+.. setting:: CELERYD_TIMER
 
-CELERYD_ETA_SCHEDULER
+CELERYD_TIMER
 ~~~~~~~~~~~~~~~~~~~~~
 
 Name of the ETA scheduler class used by the worker.
@@ -1563,7 +1543,18 @@ CELERYBEAT_MAX_LOOP_INTERVAL
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The maximum number of seconds :mod:`~celery.bin.celerybeat` can sleep
-between checking the schedule.  Default is 300 seconds (5 minutes).
+between checking the schedule.
+
+
+The default for this value is scheduler specific.
+For the default celerybeat scheduler the value is 300 (5 minutes),
+but for e.g. the django-celery database scheduler it is 5 seconds
+because the schedule may be changed externally, and so it must take
+changes to the schedule into account.
+
+Also when running celerybeat embedded (:option:`-B`) on Jython as a thread
+the max interval is overridden and set to 1 so that it's possible
+to shut down in a timely manner.
 
 
 .. _conf-celerymon:

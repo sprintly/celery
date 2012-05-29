@@ -14,13 +14,13 @@ from __future__ import absolute_import
 import os
 
 from celery.local import Proxy
-
-from . import state
-from .state import (  # noqa
+from celery import state
+from celery.state import (  # noqa
         set_default_app,
         get_current_app as current_app,
         get_current_task as current_task,
 )
+
 from .base import Celery, AppPickler  # noqa
 
 #: Proxy always returning the app set as default.
@@ -43,7 +43,7 @@ set_default_app(Celery("default", loader=default_loader,
 
 
 def bugreport():
-    return current_app.bugreport()
+    return current_app().bugreport()
 
 
 def _app_or_default(app=None):
@@ -54,7 +54,7 @@ def _app_or_default(app=None):
 
 def _app_or_default_trace(app=None):  # pragma: no cover
     from traceback import print_stack
-    from multiprocessing import current_process
+    from billiard import current_process
     if app is None:
         if getattr(state._tls, "current_app", None):
             print("-- RETURNING TO CURRENT APP --")  # noqa+

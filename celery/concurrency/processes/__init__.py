@@ -10,8 +10,7 @@ from celery import platforms
 from celery import signals
 from celery.app import app_or_default
 from celery.concurrency.base import BasePool
-
-from .pool import Pool, RUN
+from billiard.pool import Pool, RUN, CLOSE
 
 if platform.system() == "Windows":  # pragma: no cover
     # On Windows os.kill calls TerminateProcess which cannot be
@@ -48,6 +47,7 @@ def process_initializer(app, hostname):
                   str(os.environ.get("CELERY_LOG_REDIRECT_LEVEL")))
     app.loader.init_worker()
     app.loader.init_worker_process()
+    app.finalize()
     signals.worker_process_init.send(sender=None)
 
 
@@ -56,6 +56,7 @@ class TaskPool(BasePool):
     Pool = Pool
 
     requires_mediator = True
+    uses_semaphore = True
 
     def on_start(self):
         """Run the task pool.
@@ -68,9 +69,12 @@ class TaskPool(BasePool):
                                **self.options)
         self.on_apply = self._pool.apply_async
 
+    def did_start_ok(self):
+        return self._pool.did_start_ok()
+
     def on_stop(self):
         """Gracefully stop the pool."""
-        if self._pool is not None and self._pool._state == RUN:
+        if self._pool is not None and self._pool._state in (RUN, CLOSE):
             self._pool.close()
             self._pool.join()
             self._pool = None
@@ -80,6 +84,10 @@ class TaskPool(BasePool):
         if self._pool is not None:
             self._pool.terminate()
             self._pool = None
+
+    def on_close(self):
+        if self._pool is not None and self._pool._state == RUN:
+            self._pool.close()
 
     def terminate_job(self, pid, signal=None):
         _kill(pid, signal or _signal.SIGTERM)
@@ -100,6 +108,35 @@ class TaskPool(BasePool):
                 "put-guarded-by-semaphore": self.putlocks,
                 "timeouts": (self._pool.soft_timeout, self._pool.timeout)}
 
+    def init_callbacks(self, **kwargs):
+        for k, v in kwargs.iteritems():
+            setattr(self._pool, k, v)
+
+    def handle_timeouts(self):
+        if self._pool._timeout_handler:
+            self._pool._timeout_handler.handle_event()
+
+    def on_soft_timeout(self, job):
+        self._pool._timeout_handler.on_soft_timeout(job)
+
+    def on_hard_timeout(self, job):
+        self._pool._timeout_handler.on_hard_timeout(job)
+
+    def maintain_pool(self, *args, **kwargs):
+        self._pool.maintain_pool(*args, **kwargs)
+
     @property
     def num_processes(self):
         return self._pool._processes
+
+    @property
+    def readers(self):
+        return self._pool.readers
+
+    @property
+    def writers(self):
+        return self._pool.writers
+
+    @property
+    def timers(self):
+        return {self.maintain_pool: 30.0}

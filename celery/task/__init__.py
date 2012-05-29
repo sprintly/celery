@@ -11,7 +11,7 @@
 """
 from __future__ import absolute_import
 
-from celery.app.state import current_app, current_task as current
+from celery.state import current_app, current_task as current
 from celery.__compat__ import MagicModule, recreate_module
 from celery.local import Proxy
 
@@ -22,7 +22,7 @@ class module(MagicModule):
         return self.task(*args, **kwargs)
 
 
-old_module, new_module = recreate_module(__name__,
+old_module, new_module = recreate_module(__name__,  # pragma: no cover
     by_module={
         "celery.task.base":   ["BaseTask", "Task", "PeriodicTask",
                                "task", "periodic_task"],
@@ -35,7 +35,7 @@ old_module, new_module = recreate_module(__name__,
     __path__=__path__,
     __doc__=__doc__,
     current=current,
-    discard_all=Proxy(lambda: current_app.control.discard_all),
+    discard_all=Proxy(lambda: current_app.control.purge),
     backend_cleanup=Proxy(
         lambda: current_app.tasks["celery.backend_cleanup"]
     ),

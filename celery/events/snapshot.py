@@ -15,8 +15,6 @@
 """
 from __future__ import absolute_import
 
-import atexit
-
 from kombu.utils.limits import TokenBucket
 
 from celery import platforms
@@ -95,8 +93,7 @@ def evcam(camera, freq=1.0, maxrate=None, loglevel=0,
     app = app_or_default(app)
 
     if pidfile:
-        pidlock = platforms.create_pidlock(pidfile).acquire()
-        atexit.register(pidlock.release)
+        platforms.create_pidlock(pidfile)
 
     app.log.setup_logging_subsystem(loglevel, logfile)
 

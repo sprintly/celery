@@ -22,7 +22,7 @@ from celery.schedules import maybe_schedule
 _COMPAT_CLASSMETHODS = (
     "get_logger", "establish_connection", "get_publisher", "get_consumer",
     "delay", "apply_async", "retry", "apply", "AsyncResult", "subtask",
-    "bind", "on_bound", "_get_app", "annotate")
+    "push_request", "pop_request")
 
 
 class Task(BaseTask):
@@ -36,7 +36,11 @@ class Task(BaseTask):
     # given us pain (like all magic).
     for name in _COMPAT_CLASSMETHODS:
         locals()[name] = reclassmethod(getattr(BaseTask, name))
-    app = class_property(_get_app, bind)  # noqa
+
+    @classmethod
+    def _get_request(self):
+        return self.request_stack.top
+    request = class_property(_get_request)
 
 
 class PeriodicTask(Task):

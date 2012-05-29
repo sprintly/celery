@@ -13,6 +13,7 @@
 from __future__ import absolute_import
 from __future__ import with_statement
 
+import atexit
 import errno
 import os
 import platform as _platform
@@ -20,8 +21,11 @@ import shlex
 import signal as _signal
 import sys
 
+from contextlib import contextmanager
+
 from .local import try_import
 
+from billiard import current_process
 from kombu.utils.limits import TokenBucket
 
 _setproctitle = try_import("setproctitle")
@@ -34,11 +38,6 @@ EX_FAILURE = 1
 EX_UNAVAILABLE = getattr(os, "EX_UNAVAILABLE", 69)
 EX_USAGE = getattr(os, "EX_USAGE", 64)
 
-try:
-    from multiprocessing.process import current_process
-except ImportError:
-    current_process = None  # noqa
-
 SYSTEM = _platform.system()
 IS_OSX = SYSTEM == "Darwin"
 IS_WINDOWS = SYSTEM == "Windows"
@@ -47,7 +46,14 @@ DAEMON_UMASK = 0
 DAEMON_WORKDIR = "/"
 DAEMON_REDIRECT_TO = getattr(os, "devnull", "/dev/null")
 
+
+PIDFILE_FLAGS = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+PIDFILE_MODE = ((os.R_OK | os.W_OK) << 6) | ((os.R_OK) << 3) | ((os.R_OK))
+
 _setps_bucket = TokenBucket(0.5)  # 30/m, every 2 seconds
+
+PIDLOCKED = """ERROR: Pidfile (%s) already exists.
+Seems we're already running? (PID: %s)"""
 
 
 def pyimplementation():
@@ -174,11 +180,7 @@ class PIDFile(object):
         pid = os.getpid()
         content = "%d\n" % (pid, )
 
-        open_flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        open_mode = (((os.R_OK | os.W_OK) << 6) |
-                        ((os.R_OK) << 3) |
-                        ((os.R_OK)))
-        pidfile_fd = os.open(self.path, open_flags, open_mode)
+        pidfile_fd = os.open(self.path, PIDFILE_FLAGS, PIDFILE_MODE)
         pidfile = os.fdopen(pidfile_fd, "w")
         try:
             pidfile.write(content)
@@ -186,15 +188,18 @@ class PIDFile(object):
             pidfile.flush()
             try:
                 os.fsync(pidfile_fd)
-            except AttributeError:
+            except AttributeError:  # pragma: no cover
                 pass
         finally:
             pidfile.close()
 
-        with open(self.path) as fh:
-            if fh.read() != content:
+        rfh = open(self.path)
+        try:
+            if rfh.read() != content:
                 raise LockFailed(
                     "Inconsistency: Pidfile content doesn't match at re-read")
+        finally:
+            rfh.close()
 
 
 def create_pidlock(pidfile):
@@ -213,18 +218,14 @@ def create_pidlock(pidfile):
 
     .. code-block:: python
 
-        import atexit
-        pidlock = create_pidlock("/var/run/app.pid").acquire()
-        atexit.register(pidlock.release)
+        pidlock = create_pidlock("/var/run/app.pid")
 
     """
-
     pidlock = PIDFile(pidfile)
     if pidlock.is_locked() and not pidlock.remove_if_stale():
-        raise SystemExit(
-                "ERROR: Pidfile (%s) already exists.\n"
-                "Seems we're already running? (PID: %s)" % (
-                    pidfile, pidlock.read_pid()))
+        raise SystemExit(PIDLOCKED % (pidfile, pidlock.read_pid()))
+    pidlock.acquire()
+    atexit.register(pidlock.release)
     return pidlock
 
 
@@ -248,11 +249,8 @@ class DaemonContext(object):
             os.umask(self.umask)
 
             for fd in reversed(range(get_fdmax(default=2048))):
-                try:
+                with ignore_EBADF():
                     os.close(fd)
-                except OSError, exc:
-                    if exc.errno != errno.EBADF:
-                        raise
 
             os.open(DAEMON_REDIRECT_TO, os.O_RDWR)
             os.dup2(0, 1)
@@ -342,12 +340,10 @@ def parse_uid(uid):
     try:
         return int(uid)
     except ValueError:
-        if pwd:
-            try:
-                return pwd.getpwnam(uid).pw_uid
-            except KeyError:
-                raise KeyError("User does not exist: %r" % (uid, ))
-        raise
+        try:
+            return pwd.getpwnam(uid).pw_uid
+        except (AttributeError, KeyError):
+            raise KeyError("User does not exist: %r" % (uid, ))
 
 
 def parse_gid(gid):
@@ -360,12 +356,10 @@ def parse_gid(gid):
     try:
         return int(gid)
     except ValueError:
-        if grp:
-            try:
-                return grp.getgrnam(gid).gr_gid
-            except KeyError:
-                raise KeyError("Group does not exist: %r" % (gid, ))
-        raise
+        try:
+            return grp.getgrnam(gid).gr_gid
+        except (AttributeError, KeyError):
+            raise KeyError("Group does not exist: %r" % (gid, ))
 
 
 def _setgroups_hack(groups):
@@ -391,7 +385,7 @@ def setgroups(groups):
     max_groups = None
     try:
         max_groups = os.sysconf("SC_NGROUPS_MAX")
-    except:
+    except Exception:
         pass
     try:
         return _setgroups_hack(groups[:max_groups])
@@ -404,13 +398,14 @@ def setgroups(groups):
 
 
 def initgroups(uid, gid):
-    if grp and pwd:
-        username = pwd.getpwuid(uid)[0]
-        if hasattr(os, "initgroups"):  # Python 2.7+
-            return os.initgroups(username, gid)
-        groups = [gr.gr_gid for gr in grp.getgrall()
-                                if username in gr.gr_mem]
-        setgroups(groups)
+    if not pwd:  # pragma: no cover
+        return
+    username = pwd.getpwuid(uid)[0]
+    if hasattr(os, "initgroups"):  # Python 2.7+
+        return os.initgroups(username, gid)
+    groups = [gr.gr_gid for gr in grp.getgrall()
+                            if username in gr.gr_mem]
+    setgroups(groups)
 
 
 def setegid(gid):
@@ -588,7 +583,7 @@ def set_process_title(progname, info=None):
     return proctitle
 
 
-if os.environ.get("NOSETPS"):
+if os.environ.get("NOSETPS"):  # pragma: no cover
 
     def set_mp_process_title(*a, **k):
         pass
@@ -604,11 +599,8 @@ else:
         if not rate_limit or _setps_bucket.can_consume(1):
             if hostname:
                 progname = "%s@%s" % (progname, hostname.split(".")[0])
-            if current_process is not None:
-                return set_process_title(
-                    "%s:%s" % (progname, current_process().name), info=info)
-            else:
-                return set_process_title(progname, info=info)
+            return set_process_title(
+                "%s:%s" % (progname, current_process().name), info=info)
 
 
 def shellsplit(s, posix=True):
@@ -617,3 +609,12 @@ def shellsplit(s, posix=True):
     lexer.whitespace_split = True
     lexer.commenters = ''
     return list(lexer)
+
+
+@contextmanager
+def ignore_EBADF():
+    try:
+        yield
+    except OSError, exc:
+        if exc.errno != errno.EBADF:
+            raise

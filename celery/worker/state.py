@@ -51,6 +51,9 @@ revoked = LimitedSet(maxlen=REVOKES_MAX, expires=REVOKE_EXPIRES)
 #: Updates global state when a task has been reserved.
 task_reserved = reserved_requests.add
 
+should_stop = False
+should_terminate = False
+
 
 def task_accepted(request):
     """Updates global state when a task has been accepted."""
@@ -65,28 +68,89 @@ def task_ready(request):
 
 
 if os.environ.get("CELERY_BENCH"):  # pragma: no cover
+    import atexit
+
     from time import time
+    from billiard import current_process
+    from celery.utils.compat import format_d
 
     all_count = 0
+    bench_first = None
+    bench_mem_sample = []
     bench_start = None
+    bench_last = None
     bench_every = int(os.environ.get("CELERY_BENCH_EVERY", 1000))
+    bench_sample = []
     __reserved = task_reserved
     __ready = task_ready
+    _process = None
+
+    def ps():
+        global _process
+        if _process is None:
+            try:
+                from psutil import Process
+            except ImportError:
+                return None
+            _process = Process(os.getpid())
+        return _process
+
+    def mem_rss():
+        p = ps()
+        if p is not None:
+            return "%sMB" % (format_d(p.get_memory_info().rss // 1024), )
+
+    def sample(x, n=10, k=0):
+        j = len(x) // n
+        for _ in xrange(n):
+            yield x[k]
+            k += j
+
+    if current_process()._name == 'MainProcess':
+        @atexit.register
+        def on_shutdown():
+            if bench_first is not None and bench_last is not None:
+                print("- Time spent in benchmark: %r" % (
+                    bench_last - bench_first))
+                print("- Avg: %s" % (sum(bench_sample) / len(bench_sample)))
+                if filter(None, bench_mem_sample):
+                    print("- rss (sample):")
+                    for mem in sample(bench_mem_sample):
+                        print("-    > %s," % mem)
+                    bench_mem_sample[:] = []
+                    bench_sample[:] = []
+                    import gc
+                    gc.collect()
+                    print("- rss (shutdown): %s." % (mem_rss()))
+                else:
+                    print("- rss: (psutil not installed).")
 
     def task_reserved(request):  # noqa
         global bench_start
+        global bench_first
+        now = None
         if bench_start is None:
-            bench_start = time()
+            bench_start = now = time()
+        if bench_first is None:
+            bench_first = now
+
         return __reserved(request)
 
+    import sys
     def task_ready(request):  # noqa
-        global all_count, bench_start
+        global all_count
+        global bench_start
+        global bench_last
         all_count += 1
         if not all_count % bench_every:
-            print("* Time spent processing %s tasks (since first "
-                    "task received): ~%.4fs\n" % (
-                bench_every, time() - bench_start))
-            bench_start = None
+            now = time()
+            diff = now - bench_start
+            print("- Time spent processing %s tasks (since first "
+                    "task received): ~%.4fs\n" % (bench_every, diff))
+            sys.stdout.flush()
+            bench_start = bench_last = now
+            bench_sample.append(diff)
+            bench_mem_sample.append(mem_rss())
 
         return __ready(request)
 

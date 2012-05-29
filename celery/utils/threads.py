@@ -8,6 +8,9 @@ import traceback
 _Thread = threading.Thread
 _Event = threading._Event
 
+active_count = (getattr(threading, "active_count", None) or
+                threading.activeCount)
+
 
 class Event(_Event):
 
@@ -39,27 +42,38 @@ class bgThread(Thread):
     def body(self):
         raise NotImplementedError("subclass responsibility")
 
-    def on_crash(self, exc_info, msg, *fmt, **kwargs):
+    def on_crash(self, msg, *fmt, **kwargs):
         sys.stderr.write((msg + "\n") % fmt)
-        traceback.print_exception(exc_info[0], exc_info[1], exc_info[2],
-                                  None, sys.stderr)
+        exc_info = sys.exc_info()
+        try:
+            traceback.print_exception(exc_info[0], exc_info[1], exc_info[2],
+                                      None, sys.stderr)
+        finally:
+            del(exc_info)
 
     def run(self):
-        shutdown = self._is_shutdown
-        while not shutdown.is_set():
-            try:
-                self.body()
-            except Exception, exc:
-                self.on_crash(sys.exc_info(), "%r crashed: %r", self.name, exc)
-                # exiting by normal means does not work here, so force exit.
-                os._exit(1)
+        body = self.body
+        shutdown_set = self._is_shutdown.is_set
+        try:
+            while not shutdown_set():
+                try:
+                    body()
+                except Exception, exc:
+                    try:
+                        self.on_crash("%r crashed: %r", self.name, exc)
+                        self._set_stopped()
+                    finally:
+                        os._exit(1)  # exiting by normal means won't work
+        finally:
+            self._set_stopped()
+
+    def _set_stopped(self):
         try:
             self._is_stopped.set()
         except TypeError:  # pragma: no cover
             # we lost the race at interpreter shutdown,
             # so gc collected built-in modules.
             pass
-        self._is_stopped.set()
 
     def stop(self):
         """Graceful shutdown."""

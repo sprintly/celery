@@ -18,15 +18,10 @@ from functools import partial, wraps
 from itertools import islice
 from threading import Lock, RLock
 
-try:
-    from collections import Sequence
-except ImportError:
-    # <= Py2.5
-    Sequence = (list, tuple)  # noqa
-
+from kombu.utils import cached_property
 from kombu.utils.functional import promise, maybe_promise
 
-from .compat import UserDict, OrderedDict
+from .compat import UserDict, UserList, OrderedDict
 
 KEYWORD_MARK = object()
 is_not_None = partial(operator.is_not, None)
@@ -76,7 +71,7 @@ class LRUCache(UserDict):
         for k in self:
             try:
                 yield (k, self.data[k])
-            except KeyError:
+            except KeyError:  # pragma: no cover
                 pass
     iteritems = _iterate_items
 
@@ -97,12 +92,12 @@ class LRUCache(UserDict):
         return newval
 
 
+def is_list(l):
+    return hasattr(l, "__iter__") and not isinstance(l, dict)
+
+
 def maybe_list(l):
-    if l is None:
-        return l
-    elif isinstance(l, Sequence):
-        return l
-    return [l]
+    return l if l is None or is_list(l) else [l]
 
 
 def memoize(maxsize=None, Cache=LRUCache):
@@ -250,3 +245,19 @@ def uniq(it):
         if obj not in seen:
             yield obj
             seen.add(obj)
+
+
+class _regen(UserList, list):
+    # must be subclass of list so that json can encode.
+    def __init__(self, it):
+        self.__it = it
+
+    @cached_property
+    def data(self):
+        return list(self.__it)
+
+
+def regen(it):
+    if isinstance(it, (list, tuple)):
+        return it
+    return _regen(it)

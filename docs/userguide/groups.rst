@@ -95,6 +95,7 @@ tasks were invoked.
     >>> from tasks import add
 
     >>> job = group([
+    ...             add.subtask((2, 2)),
     ...             add.subtask((4, 4)),
     ...             add.subtask((8, 8)),
     ...             add.subtask((16, 16)),
@@ -246,7 +247,7 @@ Example implementation:
     def unlock_chord(taskset, callback, interval=1, max_retries=None):
         if taskset.ready():
             return subtask(callback).delay(taskset.join())
-        unlock_chord.retry(countdown=interval, max_retries=max_retries)
+        raise unlock_chord.retry(countdown=interval, max_retries=max_retries)
 
 
 This is used by all result backends except Redis and Memcached, which increment a

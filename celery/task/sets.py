@@ -2,13 +2,13 @@
 from __future__ import absolute_import
 from __future__ import with_statement
 
-from celery.app.state import get_current_task
+from celery.state import get_current_task
+from celery.app import app_or_default
 from celery.canvas import subtask, maybe_subtask  # noqa
 from celery.utils import uuid
-from celery.utils.compat import UserList
 
 
-class TaskSet(UserList):
+class TaskSet(list):
     """A task containing several subtasks, making it possible
     to track how many, or when all of the tasks have been completed.
 
@@ -22,12 +22,13 @@ class TaskSet(UserList):
         >>> list_of_return_values = taskset_result.join()  # *expensive*
 
     """
-    _app = None
+    app = None
 
     def __init__(self, tasks=None, app=None, Publisher=None):
-        self._app = app or self._app
-        self.data = [maybe_subtask(t) for t in tasks or []]
-        self._Publisher = Publisher
+        super(TaskSet, self).__init__(maybe_subtask(t) for t in tasks or [])
+        self.app = app_or_default(app or self.app)
+        self.Publisher = Publisher or self.app.amqp.TaskProducer
+        self.total = len(self)  # XXX compat
 
     def apply_async(self, connection=None, connect_timeout=None,
             publisher=None, taskset_id=None):
@@ -39,12 +40,8 @@ class TaskSet(UserList):
 
         with app.default_connection(connection, connect_timeout) as conn:
             setid = taskset_id or uuid()
-            pub = publisher or self.Publisher(connection=conn)
-            try:
-                results = self._async_results(setid, pub)
-            finally:
-                if not publisher:  # created by us.
-                    pub.close()
+            pub = publisher or self.Publisher(conn)
+            results = self._async_results(setid, pub)
 
             result = app.TaskSetResult(setid, results)
             parent = get_current_task()
@@ -54,7 +51,7 @@ class TaskSet(UserList):
 
     def _async_results(self, taskset_id, publisher):
         return [task.apply_async(taskset_id=taskset_id, publisher=publisher)
-                for task in self.tasks]
+                    for task in self]
 
     def apply(self, taskset_id=None):
         """Applies the TaskSet locally by blocking until all tasks return."""
@@ -62,30 +59,11 @@ class TaskSet(UserList):
         return self.app.TaskSetResult(setid, self._sync_results(setid))
 
     def _sync_results(self, taskset_id):
-        return [task.apply(taskset_id=taskset_id) for task in self.tasks]
-
-    @property
-    def total(self):
-        """Number of subtasks in this TaskSet."""
-        return len(self)
-
-    def _get_app(self):
-        return self._app or self.data[0].type._get_app()
-
-    def _set_app(self, app):
-        self._app = app
-    app = property(_get_app, _set_app)
+        return [task.apply(taskset_id=taskset_id) for task in self]
 
     def _get_tasks(self):
-        return self.data
+        return self
 
     def _set_tasks(self, tasks):
-        self.data = tasks
+        self[:] = tasks
     tasks = property(_get_tasks, _set_tasks)
-
-    def _get_Publisher(self):
-        return self._Publisher or self.app.amqp.TaskPublisher
-
-    def _set_Publisher(self, Publisher):
-        self._Publisher = Publisher
-    Publisher = property(_get_Publisher, _set_Publisher)

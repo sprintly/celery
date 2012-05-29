@@ -8,8 +8,12 @@ import os
 
 # Code based on the winappdbg project http://winappdbg.sourceforge.net/
 # (BSD License)
-from ctypes import byref, sizeof, windll, Structure, WinError, POINTER
-from ctypes.wintypes import DWORD, c_size_t, LONG, c_char, c_void_p
+from ctypes import (
+    byref, sizeof, windll,
+    Structure, WinError, POINTER,
+    c_size_t, c_char, c_void_p,
+)
+from ctypes.wintypes import DWORD, LONG
 
 ERROR_NO_MORE_FILES = 18
 INVALID_HANDLE_VALUE = c_void_p(-1).value
@@ -39,22 +43,19 @@ def CreateToolhelp32Snapshot(dwFlags=2, th32ProcessID=0):
     return hSnapshot
 
 
-def Process32First(hSnapshot):
-    pe = PROCESSENTRY32()
-    pe.dwSize = sizeof(PROCESSENTRY32)
-    success = windll.kernel32.Process32First(hSnapshot, byref(pe))
-    if not success:
-        if windll.kernel32.GetLastError() == ERROR_NO_MORE_FILES:
-            return
-        raise WinError()
-    return pe
+def Process32First(hSnapshot, pe=None):
+    return _Process32n(windll.kernel32.Process32First, hSnapshot, pe)
 
 
 def Process32Next(hSnapshot, pe=None):
+    return _Process32n(windll.kernel32.Process32Next, hSnapshot, pe)
+
+
+def _Process32n(fun, hSnapshot, pe=None):
     if pe is None:
         pe = PROCESSENTRY32()
     pe.dwSize = sizeof(PROCESSENTRY32)
-    success = windll.kernel32.Process32Next(hSnapshot, byref(pe))
+    success = fun(hSnapshot, byref(pe))
     if not success:
         if windll.kernel32.GetLastError() == ERROR_NO_MORE_FILES:
             return
@@ -82,7 +83,7 @@ def get_processtree_pids(pid, include_parent=True):
     parents = get_all_processes_pids()
     all_pids = parents.keys()
     pids = set([pid])
-    while True:
+    while 1:
         pids_new = pids.copy()
 
         for _pid in all_pids:

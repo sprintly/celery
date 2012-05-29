@@ -2,16 +2,12 @@
 from __future__ import absolute_import
 
 import logging
+import os
 import sys
 import threading
 import traceback
 
-try:
-    from multiprocessing import current_process
-    from multiprocessing import util as mputil
-except ImportError:
-    current_process = mputil = None  # noqa
-
+from billiard import current_process, util as mputil
 from kombu.log import get_logger as _get_logger, LOG_LEVELS
 
 from .encoding import safe_str, str_t
@@ -20,20 +16,29 @@ from .term import colored
 _process_aware = False
 is_py3k = sys.version_info[0] == 3
 
+MP_LOG = os.environ.get("MP_LOG", False)
+
 
 # Sets up our logging hierarchy.
 #
 # Every logger in the celery package inherits from the "celery"
 # logger, and every task logger inherits from the "celery.task"
 # logger.
-logger = _get_logger("celery")
+base_logger = logger = _get_logger("celery")
 mp_logger = _get_logger("multiprocessing")
+
+in_sighandler = False
+
+
+def set_in_sighandler(value):
+    global in_sighandler
+    in_sighandler = value
 
 
 def get_logger(name):
     l = _get_logger(name)
-    if l.parent is logging.root and l is not logger:
-        l.parent = logger
+    if logging.root not in (l, l.parent) and l is not base_logger:
+        l.parent = base_logger
     return l
 task_logger = get_logger("celery.task")
 
@@ -50,8 +55,8 @@ class ColorFormatter(logging.Formatter):
     colors = {"DEBUG": COLORS["blue"], "WARNING": COLORS["yellow"],
               "ERROR": COLORS["red"], "CRITICAL": COLORS["magenta"]}
 
-    def __init__(self, msg, use_color=True):
-        logging.Formatter.__init__(self, msg)
+    def __init__(self, fmt=None, use_color=True):
+        logging.Formatter.__init__(self, fmt)
         self.use_color = use_color
 
     def formatException(self, ei):
@@ -70,7 +75,7 @@ class ColorFormatter(logging.Formatter):
             except Exception, exc:
                 record.msg = "<Unrepresentable %r: %r>" % (
                         type(record.msg), exc)
-                record.exc_info = sys.exc_info()
+                record.exc_info = True
 
         if not is_py3k and "processName" not in record.__dict__:
             # Very ugly, but have to make sure processName is supported
@@ -126,10 +131,12 @@ class LoggingProxy(object):
         return map(wrap_handler, self.logger.handlers)
 
     def write(self, data):
+        """Write message to logging object."""
+        if in_sighandler:
+            return sys.__stderr__.write(safe_str(data))
         if getattr(self._thread, "recurse_protection", False):
             # Logger is logging back to this file, so stop recursing.
             return
-        """Write message to logging object."""
         data = data.strip()
         if data and not self.closed:
             self._thread.recurse_protection = True
@@ -168,46 +175,55 @@ class LoggingProxy(object):
         return None
 
 
-def _patch_logger_class():
+def ensure_process_aware_logger():
     """Make sure process name is recorded when loggers are used."""
+    global _process_aware
+    if not _process_aware:
+        logging._acquireLock()
+        try:
+            _process_aware = True
+            Logger = logging.getLoggerClass()
+            if getattr(Logger, '_process_aware', False):  # pragma: no cover
+                return
 
-    try:
-        from multiprocessing.process import current_process
-    except ImportError:
-        current_process = None  # noqa
-
-    logging._acquireLock()
-    try:
-        OldLoggerClass = logging.getLoggerClass()
-        if not getattr(OldLoggerClass, '_process_aware', False):
-
-            class ProcessAwareLogger(OldLoggerClass):
+            class ProcessAwareLogger(Logger):
                 _process_aware = True
 
                 def makeRecord(self, *args, **kwds):
-                    record = OldLoggerClass.makeRecord(self, *args, **kwds)
-                    if current_process:
-                        record.processName = current_process()._name
-                    else:
-                        record.processName = ""
+                    record = Logger.makeRecord(self, *args, **kwds)
+                    record.processName = current_process()._name
                     return record
             logging.setLoggerClass(ProcessAwareLogger)
-    finally:
-        logging._releaseLock()
-
-
-def ensure_process_aware_logger():
-    global _process_aware
-
-    if not _process_aware:
-        _patch_logger_class()
-        _process_aware = True
+        finally:
+            logging._releaseLock()
 
 
 def get_multiprocessing_logger():
-    return mputil.get_logger() if mputil else None
+    return mputil.get_logger() if mputil and MP_LOG else None
 
 
 def reset_multiprocessing_logger():
     if mputil and hasattr(mputil, "_logger"):
         mputil._logger = None
+
+
+def _patch_logger_class():
+    """Make sure loggers don't log while in a signal handler."""
+
+    logging._acquireLock()
+    try:
+        OldLoggerClass = logging.getLoggerClass()
+        if not getattr(OldLoggerClass, '_signal_safe', False):
+
+            class SigSafeLogger(OldLoggerClass):
+                _signal_safe = True
+
+                def log(self, *args, **kwargs):
+                    if in_sighandler:
+                        sys.__stderr__.write("IN SIGHANDLER WON'T LOG")
+                        return
+                    return OldLoggerClass.log(self, *args, **kwargs)
+            logging.setLoggerClass(SigSafeLogger)
+    finally:
+        logging._releaseLock()
+_patch_logger_class()

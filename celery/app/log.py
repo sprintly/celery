@@ -7,6 +7,7 @@ import sys
 from kombu.log import NullHandler
 
 from celery import signals
+from celery.state import get_current_task
 from celery.utils import isatty
 from celery.utils.compat import WatchedFileHandler
 from celery.utils.log import (
@@ -16,8 +17,6 @@ from celery.utils.log import (
     reset_multiprocessing_logger,
 )
 from celery.utils.term import colored
-
-from .state import get_current_task
 
 is_py3k = sys.version_info[0] == 3
 
@@ -186,3 +185,6 @@ class Logging(object):
         """Deprecated: No longer used."""
         self.setup_logging_subsystem(*args, **kwargs)
         return logging.root
+
+    def get_default_logger(self, name="celery", **kwargs):
+        return get_logger(name)

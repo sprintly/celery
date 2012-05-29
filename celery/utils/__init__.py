@@ -25,11 +25,7 @@ from pprint import pprint
 from celery.exceptions import CPendingDeprecationWarning, CDeprecationWarning
 from .compat import StringIO
 
-from .imports import symbol_by_name, qualname
 from .functional import noop
-
-register_after_fork = symbol_by_name(
-    "multiprocessing.util.register_after_fork", default=noop)
 
 PENDING_DEPRECATION_FMT = """
     %(description)s is scheduled for deprecation in \
@@ -62,6 +58,7 @@ def deprecated(description=None, deprecation=None, removal=None,
 
         @wraps(fun)
         def __inner(*args, **kwargs):
+            from .imports import qualname
             warn_deprecated(description=description or qualname(fun),
                             deprecation=deprecation,
                             removal=removal,
@@ -72,9 +69,12 @@ def deprecated(description=None, deprecation=None, removal=None,
 
 
 def lpmerge(L, R):
-    """Left precedent dictionary merge.  Keeps values from `l`, if the value
-    in `r` is :const:`None`."""
-    return dict(L, **dict((k, v) for k, v in R.iteritems() if v is not None))
+    """In place left precedent dictionary merge.
+
+    Keeps values from `L`, if the value in `R` is :const:`None`."""
+    set = L.__setitem__
+    [set(k, v) for k, v in R.iteritems() if v is not None]
+    return L
 
 
 def is_iterable(obj):
@@ -157,13 +157,13 @@ def cry():  # pragma: no cover
 def maybe_reraise():
     """Reraise if an exception is currently being handled, or return
     otherwise."""
-    type_, exc, tb = sys.exc_info()
+    exc_info = sys.exc_info()
     try:
-        if tb:
-            raise type_, exc, tb
+        if exc_info[2]:
+            raise exc_info[0], exc_info[1], exc_info[2]
     finally:
         # see http://docs.python.org/library/sys.html#sys.exc_info
-        del(tb)
+        del(exc_info)
 
 
 # - XXX Compat

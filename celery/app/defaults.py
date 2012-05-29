@@ -40,7 +40,8 @@ DEFAULT_TASK_LOG_FMT = """[%(asctime)s: %(levelname)s/%(processName)s] \
 
 
 def str_to_bool(term, table={"false": False, "no": False, "0": False,
-                             "true":  True, "yes": True,  "1": True}):
+                             "true":  True, "yes": True,  "1": True,
+                             "on":    True, "off": False}):
     try:
         return table[term.lower()]
     except KeyError:
@@ -72,7 +73,7 @@ NAMESPACES = {
         "USER": Option(None, type="string"),
         "PASSWORD": Option(None, type="string"),
         "VHOST": Option(None, type="string"),
-        "CONNECTION_TIMEOUT": Option(4, type="int"),
+        "CONNECTION_TIMEOUT": Option(4, type="float"),
         "CONNECTION_RETRY": Option(True, type="bool"),
         "CONNECTION_MAX_RETRIES": Option(100, type="int"),
         "POOL_LIMIT": Option(10, type="int"),
@@ -93,7 +94,7 @@ NAMESPACES = {
     "CELERY": {
         "ACKS_LATE": Option(False, type="bool"),
         "ALWAYS_EAGER": Option(False, type="bool"),
-        "AMQP_TASK_RESULT_EXPIRES": Option(type="int",
+        "AMQP_TASK_RESULT_EXPIRES": Option(type="float",
                 deprecate_by="2.5", remove_by="3.0",
                 alt="CELERY_TASK_RESULT_EXPIRES"),
         "AMQP_TASK_RESULT_CONNECTION_MAX": Option(1, type="int",
@@ -116,6 +117,7 @@ NAMESPACES = {
         "ENABLE_UTC": Option(False, type="bool"),
         "EVENT_SERIALIZER": Option("json"),
         "IMPORTS": Option((), type="tuple"),
+        "INCLUDE": Option((), type="tuple"),
         "IGNORE_RESULT": Option(False, type="bool"),
         "MAX_CACHED_RESULTS": Option(5000, type="int"),
         "MESSAGE_COMPRESSION": Option(None, type="string"),
@@ -146,7 +148,7 @@ NAMESPACES = {
                 "interval_start": 0,
                 "interval_max": 1,
                 "interval_step": 0.2}, type="dict"),
-        "TASK_RESULT_EXPIRES": Option(timedelta(days=1), type="int"),
+        "TASK_RESULT_EXPIRES": Option(timedelta(days=1), type="float"),
         "TASK_SERIALIZER": Option("pickle"),
         "TIMEZONE": Option(None, type="string"),
         "TRACK_STARTED": Option(False, type="bool"),
@@ -162,11 +164,11 @@ NAMESPACES = {
         "AUTORELOADER": Option("celery.worker.autoreload.Autoreloader"),
         "BOOT_STEPS": Option((), type="tuple"),
         "CONCURRENCY": Option(0, type="int"),
-        "ETA_SCHEDULER": Option(None, type="string"),
-        "ETA_SCHEDULER_PRECISION": Option(1.0, type="float"),
-        "FORCE_EXECV": Option(False, type="bool"),
+        "TIMER": Option(None, type="string"),
+        "TIMER_PRECISION": Option(1.0, type="float"),
+        "FORCE_EXECV": Option(True, type="bool"),
         "HIJACK_ROOT_LOGGER": Option(True, type="bool"),
-        "CONSUMER": Option("celery.worker.consumer.Consumer"),
+        "CONSUMER": Option(None, type="string"),
         "LOG_FORMAT": Option(DEFAULT_PROCESS_LOG_FMT),
         "LOG_COLOR": Option(type="bool"),
         "LOG_LEVEL": Option("WARN", deprecate_by="2.4", remove_by="3.0",
@@ -179,15 +181,15 @@ NAMESPACES = {
         "PREFETCH_MULTIPLIER": Option(4, type="int"),
         "STATE_DB": Option(),
         "TASK_LOG_FORMAT": Option(DEFAULT_TASK_LOG_FMT),
-        "TASK_SOFT_TIME_LIMIT": Option(type="int"),
-        "TASK_TIME_LIMIT": Option(type="int"),
+        "TASK_SOFT_TIME_LIMIT": Option(type="float"),
+        "TASK_TIME_LIMIT": Option(type="float"),
         "WORKER_LOST_WAIT": Option(10.0, type="float")
     },
     "CELERYBEAT": {
         "SCHEDULE": Option({}, type="dict"),
         "SCHEDULER": Option("celery.beat.PersistentScheduler"),
         "SCHEDULE_FILENAME": Option("celerybeat-schedule"),
-        "MAX_LOOP_INTERVAL": Option(5 * 60, type="int"),
+        "MAX_LOOP_INTERVAL": Option(0, type="float"),
         "LOG_LEVEL": Option("INFO", deprecate_by="2.4", remove_by="3.0"),
         "LOG_FILE": Option(deprecate_by="2.4", remove_by="3.0"),
     },
@@ -201,16 +203,12 @@ NAMESPACES = {
         "PORT": Option(25, type="int"),
         "HOST_USER": Option(None),
         "HOST_PASSWORD": Option(None),
-        "TIMEOUT": Option(2, type="int"),
+        "TIMEOUT": Option(2, type="float"),
         "USE_SSL": Option(False, type="bool"),
         "USE_TLS": Option(False, type="bool"),
     },
     "SERVER_EMAIL": Option("celery@localhost"),
     "ADMINS": Option((), type="tuple"),
-    "TT": {
-        "HOST": Option(None, type="string"),
-        "PORT": Option(None, type="int"),
-    },
 }
 
 

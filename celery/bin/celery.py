@@ -2,26 +2,22 @@
 from __future__ import absolute_import
 from __future__ import with_statement
 
-if __name__ == "__main__" and globals().get("__package__") is None:
-    __package__ = "celery.bin.celery"
-
 import anyjson
 import sys
 
+from billiard import freeze_support
 from importlib import import_module
-from optparse import OptionParser, make_option as Option
 from pprint import pformat
 from textwrap import wrap
 
 from celery import __version__
-from celery.app import app_or_default, current_app
 from celery.platforms import EX_OK, EX_FAILURE, EX_UNAVAILABLE, EX_USAGE
 from celery.utils import term
 from celery.utils.imports import symbol_by_name
 from celery.utils.text import pluralize
 from celery.utils.timeutils import maybe_iso8601
 
-from .base import Command as BaseCommand
+from celery.bin.base import Command as BaseCommand, Option
 
 HELP = """
 Type '%(prog_name)s <command> --help' for help using
@@ -50,21 +46,23 @@ def command(fun, name=None):
     return fun
 
 
-class Command(object):
+class Command(BaseCommand):
     help = ""
     args = ""
     version = __version__
+    prog_name = "celery"
 
-    option_list = BaseCommand.preload_options + (
-        Option("--quiet", "-q", action="store_true", dest="quiet",
-                default=False),
-        Option("--no-color", "-C", dest="no_color", action="store_true",
-            help="Don't colorize output."),
+    option_list = (
+        Option("--quiet", "-q", action="store_true"),
+        Option("--no-color", "-C", action="store_true"),
     )
 
-    def __init__(self, app=None, no_color=False):
-        self.app = app_or_default(app)
+    def __init__(self, app=None, no_color=False, stdout=sys.stdout,
+            stderr=sys.stderr):
+        super(Command, self).__init__(app=app)
         self.colored = term.colored(enabled=not no_color)
+        self.stdout = stdout
+        self.stderr = stderr
 
     def __call__(self, *args, **kwargs):
         try:
@@ -80,34 +78,23 @@ class Command(object):
         return EX_USAGE
 
     def error(self, s):
-        self.out(s, fh=sys.stderr)
+        self.out(s, fh=self.stderr)
 
-    def out(self, s, fh=sys.stdout):
+    def out(self, s, fh=None):
         s = str(s)
         if not s.endswith("\n"):
             s += "\n"
-        fh.write(s)
-
-    def create_parser(self, prog_name, command):
-        return OptionParser(prog=prog_name,
-                            usage=self.usage(command),
-                            version=self.version,
-                            option_list=self.get_options())
-
-    def get_options(self):
-        return self.option_list
+        (fh or self.stdout).write(s)
 
     def run_from_argv(self, prog_name, argv):
         self.prog_name = prog_name
         self.command = argv[0]
         self.arglist = argv[1:]
         self.parser = self.create_parser(self.prog_name, self.command)
-        options, args = self.parser.parse_args(self.arglist)
-        self.colored = term.colored(enabled=not options.no_color)
-        return self(*args, **options.__dict__)
-
-    def run(self, *args, **kwargs):
-        raise NotImplementedError()
+        options, args = self.prepare_args(
+                *self.parser.parse_args(self.arglist))
+        self.colored = term.colored(enabled=not options["no_color"])
+        return self(*args, **options)
 
     def usage(self, command):
         return "%%prog %s [options] %s" % (command, self.args)
@@ -121,12 +108,13 @@ class Command(object):
 
     def prettify_dict_ok_error(self, n):
         c = self.colored
-        if "ok" in n:
+        try:
             return (c.green("OK"),
                     indent(self.prettify(n["ok"])[1]))
-        elif "error" in n:
-            return (c.red("ERROR"),
-                    indent(self.prettify(n["error"])[1]))
+        except KeyError:
+            pass
+        return (c.red("ERROR"),
+                indent(self.prettify(n["error"])[1]))
 
     def prettify(self, n):
         OK = str(self.colored.green("OK"))
@@ -150,6 +138,10 @@ class Delegate(Command):
 
     def get_options(self):
         return self.option_list + self.target.get_options()
+
+    def create_parser(self, prog_name, command):
+        parser = super(Delegate, self).create_parser(prog_name, command)
+        return self.target.prepare_parser(parser)
 
     def run(self, *args, **kwargs):
         self.target.check_args(args)
@@ -192,7 +184,7 @@ class list_(Command):
             raise Error("unknown topic %r (choose one of: %s)" % (
                             what, available))
         with self.app.broker_connection() as conn:
-            self.app.amqp.get_task_consumer(conn).declare()
+            self.app.amqp.TaskConsumer(conn).declare()
             topics[what](conn.manager)
 list_ = command(list_, "list")
 
@@ -200,15 +192,15 @@ list_ = command(list_, "list")
 class apply(Command):
     args = "<task_name>"
     option_list = Command.option_list + (
-            Option("--args", "-a", dest="args"),
-            Option("--kwargs", "-k", dest="kwargs"),
-            Option("--eta", dest="eta"),
-            Option("--countdown", dest="countdown", type="int"),
-            Option("--expires", dest="expires"),
-            Option("--serializer", dest="serializer", default="json"),
-            Option("--queue", dest="queue"),
-            Option("--exchange", dest="exchange"),
-            Option("--routing-key", dest="routing_key"),
+            Option("--args", "-a"),
+            Option("--kwargs", "-k"),
+            Option("--eta"),
+            Option("--countdown", type="int"),
+            Option("--expires"),
+            Option("--serializer", default="json"),
+            Option("--queue"),
+            Option("--exchange"),
+            Option("--routing-key"),
     )
 
     def run(self, name, *_, **kw):
@@ -231,7 +223,7 @@ class apply(Command):
             try:
                 expires = maybe_iso8601(expires)
             except (TypeError, ValueError):
-                pass
+                raise
 
         res = self.app.send_task(name, args=args, kwargs=kwargs,
                                  countdown=kw.get("countdown"),
@@ -248,8 +240,8 @@ apply = command(apply)
 class purge(Command):
 
     def run(self, *args, **kwargs):
-        queues = len(current_app.amqp.queues.keys())
-        messages_removed = current_app.control.discard_all()
+        queues = len(self.app.amqp.queues.keys())
+        messages_removed = self.app.control.purge()
         if messages_removed:
             self.out("Purged %s %s from %s known task %s." % (
                 messages_removed, pluralize(messages_removed, "message"),
@@ -263,7 +255,7 @@ purge = command(purge)
 class result(Command):
     args = "<task_id>"
     option_list = Command.option_list + (
-            Option("--task", "-t", dest="task"),
+            Option("--task", "-t"),
     )
 
     def run(self, task_id, *args, **kwargs):
@@ -293,10 +285,9 @@ class inspect(Command):
                "cancel_consumer": 1.0,
                "report": 1.0}
     option_list = Command.option_list + (
-                Option("--timeout", "-t", type="float", dest="timeout",
-                    default=None,
+                Option("--timeout", "-t", type="float",
                     help="Timeout in seconds (float) waiting for reply"),
-                Option("--destination", "-d", dest="destination",
+                Option("--destination", "-d",
                     help="Comma separated list of destination node names."))
     show_body = True
 
@@ -358,7 +349,8 @@ class status(Command):
 
     def run(self, *args, **kwargs):
         replies = inspect(app=self.app,
-                          no_color=kwargs.get("no_color", False)) \
+                          no_color=kwargs.get("no_color", False),
+                          stdout=self.stdout, stderr=self.stderr) \
                     .run("ping", **dict(kwargs, quiet=True, show_body=False))
         if not replies:
             raise Error("No nodes replied within time constraint",
@@ -391,26 +383,22 @@ class migrate(Command):
 migrate = command(migrate)
 
 
-class shell(Command):
+class shell(Command):  # pragma: no cover
     option_list = Command.option_list + (
-                Option("--ipython", "-I", action="store_true",
-                    dest="force_ipython", default=False,
+                Option("--ipython", "-I",
+                    action="store_true", dest="force_ipython",
                     help="Force IPython."),
-                Option("--bpython", "-B", action="store_true",
-                    dest="force_bpython", default=False,
+                Option("--bpython", "-B",
+                    action="store_true", dest="force_bpython",
                     help="Force bpython."),
-                Option("--python", "-P", action="store_true",
-                    dest="force_python", default=False,
+                Option("--python", "-P",
+                    action="store_true", dest="force_python",
                     help="Force default Python shell."),
                 Option("--without-tasks", "-T", action="store_true",
-                    dest="without_tasks", default=False,
                     help="Don't add tasks to locals."),
                 Option("--eventlet", action="store_true",
-                    dest="eventlet", default=False,
                     help="Use eventlet."),
-                Option("--gevent", action="store_true",
-                    dest="gevent", default=False,
-                    help="Use gevent."),
+                Option("--gevent", action="store_true", help="Use gevent."),
     )
 
     def run(self, force_ipython=False, force_bpython=False,
@@ -428,6 +416,9 @@ class shell(Command):
                        "chord": celery.chord,
                        "group": celery.group,
                        "chain": celery.chain,
+                       "chunks": celery.chunks,
+                       "xmap": celery.xmap,
+                       "xstarmap": celery.xstarmap,
                        "subtask": celery.subtask}
 
         if not without_tasks:
@@ -502,7 +493,7 @@ help = command(help)
 class report(Command):
 
     def run(self, *args, **kwargs):
-        print(self.app.bugreport())
+        self.out(self.app.bugreport())
         return EX_OK
 report = command(report)
 
@@ -510,6 +501,7 @@ report = command(report)
 class CeleryCommand(BaseCommand):
     commands = commands
     enable_config_from_cmdline = True
+    prog_name = "celery"
 
     def execute(self, command, argv=None):
         try:
@@ -538,6 +530,7 @@ class CeleryCommand(BaseCommand):
     def handle_argv(self, prog_name, argv):
         self.prog_name = prog_name
         argv = self.remove_options_at_beginning(argv)
+        _, argv = self.prepare_args(None, argv)
         try:
             command = argv[0]
         except IndexError:
@@ -559,6 +552,12 @@ def determine_exit_status(ret):
 
 
 def main():
+    # Fix for setuptools generated scripts, so that it will
+    # work with multiprocessing fork emulation.
+    # (see multiprocessing.forking.get_preparation_data())
+    if __name__ != "__main__":  # pragma: no cover
+        sys.modules["__main__"] = sys.modules[__name__]
+    freeze_support()
     CeleryCommand().execute_from_commandline()
 
 if __name__ == "__main__":          # pragma: no cover

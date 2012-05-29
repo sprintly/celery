@@ -17,12 +17,11 @@
     celery.app.registry
     celery.app.builtins
     celery.app.log
+    celery.app.utils
     celery.task
     celery.task.base
     celery.task.sets
-    celery.task.chords
     celery.result
-    celery.task.control
     celery.task.http
     celery.schedules
     celery.signals
@@ -46,6 +45,6 @@
     celery.bin.celeryd
     celery.bin.celerybeat
     celery.bin.celeryev
-    celery.bin.celeryctl
+    celery.bin.celery
     celery.bin.camqadm
     celery.bin.celeryd_multi

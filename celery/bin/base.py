@@ -1,11 +1,74 @@
 # -*- coding: utf-8 -*-
+"""
+
+.. _preload-options:
+
+Preload Options
+---------------
+
+.. cmdoption:: --app
+
+    Fully qualified name of the app instance to use.
+
+.. cmdoption:: -b, --broker
+
+    Broker URL.  Default is 'amqp://guest:guest@localhost:5672//'
+
+.. cmdoption:: --loader
+
+    Name of the loader class to use.
+    Taken from the environment variable :envvar:`CELERY_LOADER`
+    or 'default' if that is not set.
+
+.. cmdoption:: --config
+
+    Name of the module to read configuration from,
+    default is 'celeryconfig'.
+
+.. _daemon-options:
+
+Daemon Options
+--------------
+
+.. cmdoption:: -f, --logfile
+
+    Path to log file. If no logfile is specified, `stderr` is used.
+
+.. cmdoption:: --pidfile
+
+    Optional file used to store the process pid.
+
+    The program will not start if this file already exists
+    and the pid is still alive.
+
+.. cmdoption:: --uid
+
+    User id, or user name of the user to run as after detaching.
+
+.. cmdoption:: --gid
+
+    Group id, or group name of the main group to change to after
+    detaching.
+
+.. cmdoption:: --umask
+
+    Effective umask of the process after detaching. Default is 0.
+
+.. cmdoption:: --workdir
+
+    Optional directory to change to after detaching.
+
+"""
 from __future__ import absolute_import
 
 import os
+import re
 import sys
 import warnings
 
+from collections import defaultdict
 from optparse import OptionParser, make_option as Option
+from types import ModuleType
 
 from celery import Celery, __version__
 from celery.exceptions import CDeprecationWarning, CPendingDeprecationWarning
@@ -22,6 +85,9 @@ Unrecognized command line arguments: %s
 Try --help?
 """
 
+find_long_opt = re.compile(r'.+?(--.+?)(?:\s|,|$)')
+find_rst_ref = re.compile(r':\w+:`(.+?)`')
+
 
 class Command(object):
     """Base class for command line applications.
@@ -30,7 +96,6 @@ class Command(object):
     :keyword get_app: Callable returning the current app if no app provided.
 
     """
-    _default_broker_url = r'amqp://guest:guest@localhost:5672//'
     #: Arg list used in help.
     args = ''
 
@@ -44,24 +109,15 @@ class Command(object):
     #: List of options (without preload options).
     option_list = ()
 
+    # module Rst documentation to parse help from (if any)
+    doc = None
+
     #: List of options to parse before parsing other options.
     preload_options = (
-            Option("--app",
-                    default=None, action="store", dest="app",
-                    help="Name of the app instance to use. "),
-            Option("-b", "--broker",
-                    default=None, action="store", dest="broker",
-                    help="Broker URL.  Default is %s" % (
-                            _default_broker_url, )),
-            Option("--loader",
-                   default=None, action="store", dest="loader",
-                   help="Name of the loader class to use. "
-                        "Taken from the environment variable CELERY_LOADER, "
-                        "or 'default' if that is not set."),
-            Option("--config",
-                    default="celeryconfig", action="store",
-                    dest="config_module",
-                    help="Name of the module to read configuration from."),
+        Option("--app", default=None),
+        Option("-b", "--broker", default=None),
+        Option("--loader", default=None),
+        Option("--config", default="celeryconfig", dest="config_module"),
     )
 
     #: Enable if the application should support config from the cmdline.
@@ -93,7 +149,7 @@ class Command(object):
         prog_name = os.path.basename(argv[0])
         return self.handle_argv(prog_name, argv[1:])
 
-    def usage(self):
+    def usage(self, command):
         """Returns the command-line usage string for this app."""
         return "%%prog [options] %s" % (self.args, )
 
@@ -117,14 +173,17 @@ class Command(object):
         and ``argv`` contains positional arguments.
 
         """
-
-        options, args = self.parse_options(prog_name, argv)
-        options = dict((k, self.expanduser(v))
-                        for k, v in vars(options).iteritems()
-                            if not k.startswith('_'))
-        argv = map(self.expanduser, argv)
-        self.check_args(args)
+        options, args = self.prepare_args(*self.parse_options(prog_name, argv))
         return self.run(*args, **options)
+
+    def prepare_args(self, options, args):
+        if options:
+            options = dict((k, self.expanduser(v))
+                            for k, v in vars(options).iteritems()
+                                if not k.startswith('_'))
+        args = map(self.expanduser, args)
+        self.check_args(args)
+        return options, args
 
     def check_args(self, args):
         if not self.supports_args and args:
@@ -139,17 +198,26 @@ class Command(object):
         # Don't want to load configuration to just print the version,
         # so we handle --version manually here.
         if "--version" in arguments:
-            print(self.version)
+            sys.stdout.write("%s\n" % self.version)
             sys.exit(0)
         parser = self.create_parser(prog_name)
         return parser.parse_args(arguments)
 
-    def create_parser(self, prog_name):
-        return self.Parser(prog=prog_name,
-                           usage=self.usage(),
+    def create_parser(self, prog_name, command=None):
+        return self.prepare_parser(self.Parser(prog=prog_name,
+                           usage=self.usage(command),
                            version=self.version,
                            option_list=(self.preload_options +
-                                        self.get_options()))
+                                        self.get_options())))
+
+    def prepare_parser(self, parser):
+        docs = [self.parse_doc(doc) for doc in (self.doc, __doc__) if doc]
+        for doc in docs:
+            for long_opt, help in doc.iteritems():
+                option = parser.get_option(long_opt)
+                if option is not None:
+                    option.help = ' '.join(help) % {"default": option.default}
+        return parser
 
     def prepare_preload_options(self, options):
         """Optional handler to do additional processing of preload options.
@@ -176,12 +244,20 @@ class Command(object):
         if config_module:
             os.environ["CELERY_CONFIG_MODULE"] = config_module
         if app:
-            self.app = self.symbol_by_name(app)
+            self.app = self.find_app(app)
         else:
             self.app = self.get_app(loader=loader)
         if self.enable_config_from_cmdline:
             argv = self.process_cmdline_config(argv)
         return argv
+
+    def find_app(self, app):
+        sym = self.symbol_by_name(app)
+        if isinstance(sym, ModuleType):
+            if getattr(sym, "__path__", None):
+                return self.find_app("%s.celery:" % (app.replace(":", ""), ))
+            return sym.celery
+        return sym
 
     def symbol_by_name(self, name):
         return symbol_by_name(name, imp=import_from_cwd)
@@ -219,28 +295,29 @@ class Command(object):
             index += 1
         return acc
 
+    def parse_doc(self, doc):
+        options, in_option = defaultdict(list), None
+        for line in doc.splitlines():
+            if line.startswith(".. cmdoption::"):
+                m = find_long_opt.match(line)
+                if m:
+                    in_option = m.groups()[0].strip()
+                assert in_option, "missing long opt"
+            elif in_option and line.startswith(' ' * 4):
+                options[in_option].append(find_rst_ref.sub(r'\1',
+                    line.strip()).replace('`', ''))
+        return options
+
     def _get_default_app(self, *args, **kwargs):
         return Celery(*args, **kwargs)
 
 
 def daemon_options(default_pidfile=None, default_logfile=None):
     return (
-        Option('-f', '--logfile', default=default_logfile,
-               action="store", dest="logfile",
-               help="Path to the logfile"),
-        Option('--pidfile', default=default_pidfile,
-               action="store", dest="pidfile",
-               help="Path to the pidfile."),
-        Option('--uid', default=None,
-               action="store", dest="uid",
-               help="Effective user id to run as when detached."),
-        Option('--gid', default=None,
-               action="store", dest="gid",
-               help="Effective group id to run as when detached."),
-        Option('--umask', default=0,
-               action="store", type="int", dest="umask",
-               help="Umask of the process when detached."),
-        Option('--workdir', default=None,
-               action="store", dest="working_directory",
-               help="Directory to change to when detached."),
-)
+        Option("-f", "--logfile", default=default_logfile),
+        Option("--pidfile", default=default_pidfile),
+        Option("--uid", default=None),
+        Option("--gid", default=None),
+        Option("--umask", default=0, type="int"),
+        Option("--workdir", default=None, dest="working_directory"),
+    )

@@ -5,8 +5,8 @@ import sys
 
 from kombu.utils.url import _parse_url
 
-from celery.app.state import current_app
 from celery.local import Proxy
+from celery.state import current_app
 from celery.utils.imports import symbol_by_name
 from celery.utils.functional import memoize
 
@@ -19,7 +19,6 @@ BACKEND_ALIASES = {
     "cache": "celery.backends.cache:CacheBackend",
     "redis": "celery.backends.redis:RedisBackend",
     "mongodb": "celery.backends.mongodb:MongoBackend",
-    "tyrant": "celery.backends.tyrant:TyrantBackend",
     "database": "celery.backends.database:DatabaseBackend",
     "cassandra": "celery.backends.cassandra:CassandraBackend",
     "disabled": "celery.backends.base:DisabledBackend",

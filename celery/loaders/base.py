@@ -15,8 +15,6 @@ import anyjson
 import importlib
 import os
 import re
-import traceback
-import warnings
 
 from datetime import datetime
 
@@ -101,9 +99,10 @@ class BaseLoader(object):
                 package=package)
 
     def import_default_modules(self):
-        imports = set(maybe_list(self.conf.get("CELERY_IMPORTS") or ()))
-        return [self.import_task_module(module)
-                    for module in imports | self.builtin_modules]
+        return [self.import_task_module(m)
+            for m in set(maybe_list(self.app.conf.CELERY_IMPORTS))
+                   | set(maybe_list(self.app.conf.CELERY_INCLUDE))
+                   | self.builtin_modules]
 
     def init_worker(self):
         if not self.worker_initialized:
@@ -188,22 +187,14 @@ class BaseLoader(object):
             sender=None, to=None, host=None, port=None,
             user=None, password=None, timeout=None,
             use_ssl=False, use_tls=False):
-        try:
-            message = self.mail.Message(sender=sender, to=to,
-                                        subject=safe_str(subject),
-                                        body=safe_str(body))
-            mailer = self.mail.Mailer(host=host, port=port,
-                                      user=user, password=password,
-                                      timeout=timeout, use_ssl=use_ssl,
-                                      use_tls=use_tls)
-            mailer.send(message)
-        except Exception, exc:
-            if not fail_silently:
-                raise
-            warnings.warn(self.mail.SendmailWarning(
-                "Mail could not be sent: %r %r\n%r" % (
-                    exc, {"To": to, "Subject": subject},
-                    traceback.format_stack())))
+        message = self.mail.Message(sender=sender, to=to,
+                                    subject=safe_str(subject),
+                                    body=safe_str(body))
+        mailer = self.mail.Mailer(host=host, port=port,
+                                  user=user, password=password,
+                                  timeout=timeout, use_ssl=use_ssl,
+                                  use_tls=use_tls)
+        mailer.send(message, fail_silently=fail_silently)
 
     def read_configuration(self):
         return {}

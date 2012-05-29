@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """MongoDB backend for celery."""
 from __future__ import absolute_import
@@ -6,8 +7,16 @@ from datetime import datetime
 
 try:
     import pymongo
-except ImportError:
-    pymongo = None  # noqa
+except ImportError:  # pragma: no cover
+    pymongo = None   # noqa
+
+if pymongo:
+    try:
+        from bson.binary import Binary
+    except ImportError:                     # pragma: no cover
+        from pymongo.binary import Binary   # noqa
+else:                                       # pragma: no cover
+    Binary = None                           # noqa
 
 from kombu.utils import cached_property
 
@@ -18,7 +27,7 @@ from celery.utils.timeutils import maybe_timedelta
 from .base import BaseDictBackend
 
 
-class Bunch:
+class Bunch(object):
 
     def __init__(self, **kw):
         self.__dict__.update(kw)
@@ -94,13 +103,12 @@ class MongoBackend(BaseDictBackend):
 
     def _store_result(self, task_id, result, status, traceback=None):
         """Store return value and status of an executed task."""
-        from pymongo.binary import Binary
-
         meta = {"_id": task_id,
                 "status": status,
                 "result": Binary(self.encode(result)),
                 "date_done": datetime.utcnow(),
-                "traceback": Binary(self.encode(traceback))}
+                "traceback": Binary(self.encode(traceback)),
+                "children": Binary(self.encode(self.current_task_children()))}
         self.collection.save(meta, safe=True)
 
         return result
@@ -118,14 +126,13 @@ class MongoBackend(BaseDictBackend):
             "result": self.decode(obj["result"]),
             "date_done": obj["date_done"],
             "traceback": self.decode(obj["traceback"]),
+            "children": self.decode(obj["children"]),
         }
 
         return meta
 
     def _save_taskset(self, taskset_id, result):
         """Save the taskset result."""
-        from pymongo.binary import Binary
-
         meta = {"_id": taskset_id,
                 "result": Binary(self.encode(result)),
                 "date_done": datetime.utcnow()}
